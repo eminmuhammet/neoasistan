@@ -43,11 +43,10 @@ def similarity(candidate: str, phrase: str) -> float:
     return max(whole, best_window)
 
 
-def matches_wake_phrase(transcript: str, phrase: str, threshold: float = 0.72) -> bool:
+def matches_wake_phrase(transcript: str, phrase: str, threshold: float = 0.85) -> bool:
     """Whether a transcript is a plausible rendering of the wake phrase.
 
-    The threshold is deliberately forgiving: a missed wake word costs the
-    user a repeat, while the acoustic matcher in front of this has already
-    rejected most of what isn't the phrase.
+    Default measured against real transcripts: see WAKE_PHRASE_THRESHOLD in
+    wake_word.py for the scores this number comes from.
     """
     return similarity(transcript, phrase) >= threshold

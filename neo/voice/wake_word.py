@@ -26,10 +26,17 @@ SAMPLE_RATE = 16000
 # enrolled recordings as its reference, and doing them there lets a single
 # VAD pass serve all of them plus the DTW comparison.
 
-# Forgiving on purpose: a rejected real wake phrase costs the user a repeat,
-# and the acoustic matcher has already screened out most non-candidates
-# before this runs.
-WAKE_PHRASE_THRESHOLD = 0.72
+# Measured against real transcripts rather than picked by feel. At 0.72 the
+# live log shows "Ne o ya?" scoring 0.80 and waking NEO mid-conversation --
+# ordinary Turkish filler that happens to share most of its letters with
+# "neo uyan". Scoring the realistic set puts genuine renderings at 0.88 and
+# above ("neyo uyan" 0.94, "neo uyar" 0.88) and everything else at 0.59 and
+# below, with that one phrase in between.
+#
+# The margin is thin (0.08), so it is worth knowing the failure mode: a
+# rejected real phrase costs one repeat, an accepted false one wakes NEO
+# while the user is talking to someone else.
+WAKE_PHRASE_THRESHOLD = 0.85
 
 OnWake = Callable[[], Awaitable[None]]
 OnCommand = Callable[[str], Awaitable[None]]
