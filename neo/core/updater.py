@@ -175,9 +175,15 @@ def apply_update(zip_path: Path, target_dir: Path | None = None) -> None:
         encoding="utf-8",
     )
 
+    # CREATE_NEW_CONSOLE, not DETACHED_PROCESS. Measured directly: a helper
+    # spawned DETACHED_PROCESS never ran once the parent exited, which is
+    # why the update downloaded and verified and then silently did nothing.
+    # CREATE_NO_WINDOW also survives, but a visible console is better here:
+    # NEO has just closed itself and there is a gap before it comes back, so
+    # "NEO guncelleniyor..." on screen beats an empty desktop.
     subprocess.Popen(
         ["cmd.exe", "/c", str(script)],
-        creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+        creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         close_fds=True,
         cwd=os.path.dirname(str(script)),

@@ -6,6 +6,7 @@ disk was unchanged.
 """
 
 import os
+import subprocess
 import sys
 import tempfile
 import zipfile
@@ -32,6 +33,7 @@ def written_script(package, tmp_path, monkeypatch):
 
     def fake_popen(args, **kwargs):
         spawned["args"] = args
+        spawned["kwargs"] = kwargs
         return None
 
     monkeypatch.setattr("neo.core.updater.subprocess.Popen", fake_popen)
@@ -90,8 +92,15 @@ def test_helper_copies_from_the_unwrapped_package(written_script, tmp_path):
     assert str(tmp_path / "install") in body
 
 
-def test_helper_is_spawned_detached(written_script):
-    """It has to outlive the process it is waiting for."""
+def test_helper_is_not_spawned_detached(written_script):
+    """Measured on this machine: a DETACHED_PROCESS helper never ran at all
+    once the parent exited -- the update downloaded, verified, and then
+    silently did nothing. CREATE_NO_WINDOW and CREATE_NEW_CONSOLE both
+    survive; the console one is used so the gap while NEO is closed isn't a
+    blank screen."""
     _, spawned = written_script
 
     assert spawned["args"][0] == "cmd.exe"
+    flags = spawned["kwargs"]["creationflags"]
+    assert not flags & subprocess.DETACHED_PROCESS
+    assert flags & subprocess.CREATE_NEW_CONSOLE

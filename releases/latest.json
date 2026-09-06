@@ -1,6 +1,6 @@
 {
-  "version": "0.1.4",
-  "url": "https://raw.githubusercontent.com/eminmuhammet/neoasistan/main/releases/NEO-0.1.4.zip",
-  "sha256": "fe1da20fc7a799d555491350eaa76a64cf9fa6a7b29e0d3064d0ee137418146c",
-  "notes": "Onay penceresi artık asyncio döngüsünü bloklamıyor; güncelleme kurulumu yarıda kalmıyor."
+  "version": "0.1.5",
+  "url": "https://raw.githubusercontent.com/eminmuhammet/neoasistan/main/releases/NEO-0.1.5.zip",
+  "sha256": "7f0865306f81af3fa0b920869f2322c22e81a2330e3b42c1748e690ec9ff8031",
+  "notes": "Güncelleme yardımcısı artık gerçekten çalışıyor; kurulum kendini tamamlıyor."
 }
