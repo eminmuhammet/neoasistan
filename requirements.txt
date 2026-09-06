@@ -1,0 +1,27 @@
+# Phase 1 -- core, config, logging, LLM client, agent, GUI
+anthropic>=0.40
+python-dotenv>=1.0
+PySide6>=6.7
+qasync>=0.27
+pytest>=8.0
+
+# Phase 2 -- voice: microphone, STT (faster-whisper), TTS (SAPI + Edge neural voice)
+sounddevice>=0.4.6
+numpy>=1.26
+faster-whisper>=1.0
+pywin32>=306
+edge-tts>=7.0
+
+# Phase 3 -- Windows tools: app/website launching, CPU/RAM/GPU/disk info
+psutil>=5.9
+nvidia-ml-py>=12.0
+
+# Phase 4 -- internet: weather (Open-Meteo, no key needed), web research
+# (Claude's built-in web_search tool -- no extra package needed)
+httpx>=0.27
+
+# Phase 5 (started early) -- local calendar/notes (sqlite3, built-in) +
+# optional Google Calendar sync (needs user-provided OAuth credentials.json,
+# see README)
+google-auth-oauthlib>=1.2
+google-api-python-client>=2.140
