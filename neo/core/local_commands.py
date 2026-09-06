@@ -309,6 +309,15 @@ async def try_handle_locally(text: str, registry: ToolRegistry) -> str | None:
     LLM-driven Agent)."""
     lowered = text.lower()
 
+    # Applied to the whole fast path, not just the tool lookup below.
+    # Living only inside match_local_command left the branches that run
+    # first unguarded: "Yarın 16.00'a bir program ekle" matched the
+    # free-check pattern ("yarın" ... "program") and was answered with
+    # "Yarın için not aldığın bir şey yok" -- the note was never created,
+    # even though "ekle" is exactly what this pattern exists to catch.
+    if _ACTION_INTENT_PATTERN.search(lowered):
+        return None
+
     if _GOOD_MORNING_PATTERN.search(lowered):
         return await _handle_good_morning(registry)
 

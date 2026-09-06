@@ -153,6 +153,27 @@ def test_genuine_status_questions_still_use_the_fast_path(text):
 @pytest.mark.parametrize(
     "text",
     [
+        "Yarın 16.00'a bir program ekle",
+        "bugün programıma toplantı ekle",
+        "yarın için bir hatırlatma oluştur",
+        "günaydın, yarına diş hekimi randevusu ekle",
+    ],
+)
+def test_action_requests_bypass_every_fast_path_branch(text):
+    """The guard used to live only in match_local_command, which runs last.
+    "Yarın 16.00'a bir program ekle" matched the free-time pattern ("yarın"
+    ... "program") in an earlier branch and came back "Yarın için not aldığın
+    bir şey yok" -- the note was silently never created."""
+    import asyncio
+
+    from neo.core.local_commands import try_handle_locally
+
+    assert asyncio.run(try_handle_locally(text, registry=None)) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "Takbimimde sadece saat 13.00'daki buluşma gözüküyor diğerleri neden gözükmüyor",
         "saat 15 civarı müsait miyim yoksa dolu muyum acaba",
         "dün akşam saat kaçta uyuduğumu hatırlıyor musun",
