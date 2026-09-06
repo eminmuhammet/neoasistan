@@ -52,11 +52,11 @@ def build_about_text(wake_phrase: str = "Neo uyan") -> str:
 <p>Windows için kişisel yapay zekâ masaüstü asistanı.</p>
 <p><b>Yapabildiklerim (API'siz):</b> saat/tarih, CPU/RAM/GPU/disk durumu,
 hava durumu, takvim notları, uygulama/web sitesi açma, günaydın özeti.</p>
-<p><b>Claude gerektirenler:</b> genel sohbet, web araştırması, karmaşık
+<p><b>İnternet gerektirenler:</b> genel sohbet, web araştırması, karmaşık
 istekler.</p>
 <p><b>Sesli kontrol:</b> 🎙 basılı tutup konuş, ya da "🎓 Neo'yu öğret" ile
 sesini öğretip "{wake_phrase}" diyerek uyandır.</p>
-<p style="color:#7c8b98;">Sürüm {__version__}</p>
+<p style="color:#7c8b98;">Sürüm {__version__} · Emin İLHAN</p>
 """
 
 ENROLLMENT_SAMPLES = 3

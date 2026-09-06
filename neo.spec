@@ -9,6 +9,8 @@
 # failures. The speech model itself is NOT bundled; faster-whisper downloads
 # it to the user's Hugging Face cache on first use.
 
+import os
+
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 datas = []
@@ -30,7 +32,24 @@ datas += collect_data_files("sounddevice")
 
 # edge-tts and the Google API client read packaged data files at runtime.
 datas += collect_data_files("edge_tts")
-datas += collect_data_files("googleapiclient")
+
+
+def _google_api_data():
+    """googleapiclient ships a discovery document for every Google API it
+    knows about -- 600 files, 100 MB in the built bundle. NEO calls exactly
+    one of them (Calendar v3, 0.13 MB), so the rest is pure weight in every
+    release the updater has to download."""
+    kept = []
+    for source, destination in collect_data_files("googleapiclient"):
+        name = os.path.basename(source).lower()
+        if "discovery_cache" in source.replace("\\", "/") and name.endswith(".json"):
+            if not name.startswith("calendar."):
+                continue
+        kept.append((source, destination))
+    return kept
+
+
+datas += _google_api_data()
 
 
 a = Analysis(
@@ -42,9 +61,47 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "pytest"],
+    excludes=[
+        "tkinter",
+        "matplotlib",
+        "pytest",
+        # NEO's interface is plain QtWidgets: no QML/Quick scene graph, no
+        # 3D, charts, multimedia, PDF viewer or embedded browser.
+        "PySide6.QtQml",
+        "PySide6.QtQuick",
+        "PySide6.QtQuickWidgets",
+        "PySide6.Qt3DCore",
+        "PySide6.QtCharts",
+        "PySide6.QtDataVisualization",
+        "PySide6.QtWebEngineCore",
+        "PySide6.QtWebEngineWidgets",
+        "PySide6.QtMultimedia",
+        "PySide6.QtPdf",
+        "PySide6.QtPdfWidgets",
+    ],
     noarchive=False,
 )
+
+# Qt's own DLLs are pulled in by PySide6's hook regardless of the module
+# excludes above, so they are dropped here as well. opengl32sw is Qt's
+# software OpenGL fallback (19.7 MB) and a widgets-only interface never
+# reaches for it.
+_UNUSED_QT_BINARIES = (
+    "opengl32sw",
+    "Qt6Quick",
+    "Qt6Qml",
+    "Qt6Pdf",
+    "Qt6WebEngine",
+    "Qt6Multimedia",
+    "Qt63D",
+    "Qt6Charts",
+    "Qt6DataVisualization",
+)
+a.binaries = [
+    entry
+    for entry in a.binaries
+    if not any(unused.lower() in os.path.basename(entry[0]).lower() for unused in _UNUSED_QT_BINARIES)
+]
 
 pyz = PYZ(a.pure)
 

@@ -208,12 +208,23 @@ _STATIC_REPLIES: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = (
             "durumunu okurum; hava durumuna bakarım; uygulama ve web sitesi "
             "açarım; takvimine not alır, günaydın dediğinde günün notlarını "
             "hatırlatırım. Daha genel sohbet, araştırma ve karmaşık "
-            "istekler için Claude ile konuşup cevap üretirim.",
+            "istekler için internete bağlanıp cevap üretirim.",
         ),
     ),
     (
         re.compile(r"\bsen kimsin\b|ad[ıi]n ne|\bkim bu\b"),
         ("Ben NEO, bu bilgisayarda çalışan kişisel yapay zekâ asistanınım.",),
+    ),
+    (
+        re.compile(
+            r"seni kim (yapt[ıi]|geli[şs]tirdi|kodlad[ıi]|yazd[ıi])|"
+            r"(yap[ıi]mc[ıi]n|geli[şs]tiricin|[üu]reticin) kim|kimin eseri"
+        ),
+        (
+            "Beni Emin İLHAN yaptı.",
+            "Yapımcım Emin İLHAN.",
+            "Emin İLHAN geliştirdi beni.",
+        ),
     ),
 )
 
