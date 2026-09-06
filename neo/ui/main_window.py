@@ -7,6 +7,7 @@ import os
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -65,6 +66,10 @@ ENROLLMENT_MAX_RETRIES = 3
 PTT_ENERGY_THRESHOLD = 0.006
 PTT_MIN_VOICED_SECONDS = 0.12
 PTT_MIN_SPEECH_SECONDS = 0.25
+# How long a graceful shutdown gets before the process is ended outright.
+# Audio and model threads don't always cooperate, and the update helper is
+# blocked waiting for this process to disappear.
+SHUTDOWN_GRACE_MS = 3000
 
 STATE_LABELS = {
     AgentState.IDLE: "Hazır",
@@ -407,16 +412,24 @@ class MainWindow(QMainWindow):
         saying it was about to restart while nothing happened.
         """
         self._quitting = True
-        self.close()  # runs the closeEvent cleanup: TTS, mic, wake loop
-        QApplication.instance().quit()
 
-        loop = asyncio.get_event_loop()
-        loop.call_soon(loop.stop)
+        # Armed first, and every step below is individually guarded: the
+        # helper script is already waiting for this process to exit, so a
+        # failure anywhere in the shutdown must not be able to leave NEO
+        # running. An earlier version put this last and a NameError on the
+        # first line meant it was never scheduled -- NEO closed its window
+        # but the process stayed up and the update never applied.
+        QTimer.singleShot(SHUTDOWN_GRACE_MS, lambda: os._exit(0))
 
-        # Audio and model threads are not always cooperative about exiting;
-        # after cleanup has run and the loop has been asked to stop, leaving
-        # the process alive would strand the update half-applied.
-        QTimer.singleShot(3000, lambda: os._exit(0))
+        for step in (
+            self.close,  # closeEvent cleanup: TTS, mic, wake loop
+            lambda: QApplication.instance().quit(),
+            lambda: asyncio.get_event_loop().call_soon(asyncio.get_event_loop().stop),
+        ):
+            try:
+                step()
+            except Exception:
+                logger.exception("Kapanış adımı başarısız, çıkışa devam ediliyor")
 
     # -- autostart ---------------------------------------------------------
 

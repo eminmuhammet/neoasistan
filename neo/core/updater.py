@@ -162,7 +162,11 @@ def apply_update(zip_path: Path, target_dir: Path | None = None) -> None:
         "if errorlevel 1 goto ready\r\n"
         "set /a tries+=1\r\n"
         "if %tries% GEQ 30 goto ready\r\n"
-        "timeout /t 1 /nobreak >nul\r\n"
+        # `timeout` needs a console to read from and this helper is spawned
+        # detached, where it fails immediately with "Input redirection is
+        # not supported" -- so the wait loop spun with no delay at all.
+        # Pinging localhost is the console-free way to wait a second.
+        "ping -n 2 127.0.0.1 >nul\r\n"
         "goto waitloop\r\n"
         ":ready\r\n"
         f'robocopy "{source}" "{target}" /E /IS /IT /R:2 /W:1 >nul\r\n'

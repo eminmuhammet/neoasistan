@@ -60,6 +60,17 @@ def test_helper_gives_up_waiting_eventually(written_script):
     assert "GEQ" in body
 
 
+def test_wait_loop_does_not_use_timeout(written_script):
+    """`timeout` reads from the console, and this helper runs detached with
+    none -- it fails instantly with "Input redirection is not supported", so
+    the loop burned through its attempts without ever waiting."""
+    script, _ = written_script
+    body = script.read_text(encoding="utf-8")
+
+    assert "timeout /t" not in body
+    assert "ping -n" in body
+
+
 def test_helper_relaunches_with_the_right_interpreter(written_script):
     """Passing run_neo.py to `start` hands it to whatever Python owns .py --
     usually the system install, which has none of NEO's dependencies."""

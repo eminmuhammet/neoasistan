@@ -1,6 +1,6 @@
 {
-  "version": "0.1.2",
-  "url": "https://raw.githubusercontent.com/eminmuhammet/neoasistan/main/releases/NEO-0.1.2.zip",
-  "sha256": "05610c2df66b0d907444e55e4440f9f128bd0b577e7162ee90623a317b74ae80",
-  "notes": "Güncelleme kurulumu düzeltildi: uygulama artık düzgün kapanıyor ve doğru yorumlayıcıyla yeniden başlıyor."
+  "version": "0.1.3",
+  "url": "https://raw.githubusercontent.com/eminmuhammet/neoasistan/main/releases/NEO-0.1.3.zip",
+  "sha256": "1a5a6b9fd8336d29b0e7bdcc8cae1b1681746eb3bd78590ed2cc3e7bc180bc35",
+  "notes": "Kapanış ve yeniden başlatma düzeltildi; güncelleme artık kendini tamamlıyor."
 }
