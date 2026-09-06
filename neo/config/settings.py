@@ -37,33 +37,62 @@ def user_data_root() -> Path:
     return Path(base) / "NEO"
 
 
+def _legacy_sources() -> list[Path]:
+    """Where an earlier, source-run install might be.
+
+    PROJECT_ROOT alone was wrong for the packaged build: it comes from
+    __file__, which under PyInstaller resolves inside the bundle's own
+    `_internal` folder. Migration therefore "found" only what a previous
+    packaged run had written there and copied an empty calendar over,
+    leaving the API key, Google credentials and wake-word enrollment behind.
+    """
+    candidates = [PROJECT_ROOT, Path.home() / "NEO"]
+    seen: list[Path] = []
+    for path in candidates:
+        if path.is_dir() and path not in seen and (path / "run_neo.py").is_file():
+            seen.append(path)
+    return seen
+
+
 def _migrate_legacy_data(target: Path) -> None:
-    """Copies data from an earlier source-run install on first packaged run.
+    """Brings across setup the user already did, on a packaged run.
 
     Without this the packaged build starts blank -- no API key, no calendar,
-    no enrolled wake word -- and the user has to redo setup they already did.
-    Copies rather than moves, so the source install keeps working too.
+    no enrolled wake word. Copies rather than moves, so the source install
+    keeps working, and never overwrites a file the packaged build already
+    has: it runs on every start and must only ever fill in what's missing.
     """
-    if target.exists() or not PROJECT_ROOT.exists():
-        return
     try:
-        target.mkdir(parents=True, exist_ok=True)
-        legacy_data = PROJECT_ROOT / "data"
-        if legacy_data.is_dir():
-            shutil.copytree(legacy_data, target / "data", dirs_exist_ok=True)
-        for name in (".env", "credentials.json"):
-            source = PROJECT_ROOT / name
-            if source.is_file():
-                shutil.copy2(source, target / name)
-        logger.info("Önceki kurulumdan veriler taşındı: %s", target)
+        for source_root in _legacy_sources():
+            for name in (".env", "credentials.json"):
+                source = source_root / name
+                destination = target / name
+                if source.is_file() and not destination.exists():
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
+                    logger.info("Önceki kurulumdan taşındı: %s", name)
+
+            legacy_data = source_root / "data"
+            if not legacy_data.is_dir():
+                continue
+            for item in legacy_data.iterdir():
+                destination = target / "data" / item.name
+                if destination.exists():
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if item.is_dir():
+                    shutil.copytree(item, destination)
+                else:
+                    shutil.copy2(item, destination)
+                logger.info("Önceki kurulumdan taşındı: data/%s", item.name)
     except Exception:
         logger.exception("Eski veriler taşınamadı; NEO boş yapılandırmayla başlayacak")
 
 
 USER_ROOT = user_data_root()
 if is_frozen():
-    _migrate_legacy_data(USER_ROOT)
     USER_ROOT.mkdir(parents=True, exist_ok=True)
+    _migrate_legacy_data(USER_ROOT)
 
 # The packaged build reads its key from the user folder; a source checkout
 # keeps reading the one next to the code.

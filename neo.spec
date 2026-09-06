@@ -34,22 +34,23 @@ datas += collect_data_files("sounddevice")
 datas += collect_data_files("edge_tts")
 
 
-def _google_api_data():
+datas += collect_data_files("googleapiclient")
+
+
+def _is_unused_discovery_doc(dest_path):
     """googleapiclient ships a discovery document for every Google API it
     knows about -- 600 files, 100 MB in the built bundle. NEO calls exactly
-    one of them (Calendar v3, 0.13 MB), so the rest is pure weight in every
-    release the updater has to download."""
-    kept = []
-    for source, destination in collect_data_files("googleapiclient"):
-        name = os.path.basename(source).lower()
-        if "discovery_cache" in source.replace("\\", "/") and name.endswith(".json"):
-            if not name.startswith("calendar."):
-                continue
-        kept.append((source, destination))
-    return kept
+    one of them (Calendar v3, 0.13 MB); the rest is weight in every release
+    the updater has to download.
 
-
-datas += _google_api_data()
+    Filtering the `datas` list before Analysis did nothing: PyInstaller's own
+    googleapiclient hook collects the cache independently and put all 600
+    back. They have to be removed from the finished analysis instead.
+    """
+    path = str(dest_path).replace("\\", "/").lower()
+    if "discovery_cache/documents/" not in path or not path.endswith(".json"):
+        return False
+    return not os.path.basename(path).startswith("calendar.")
 
 
 a = Analysis(
@@ -102,6 +103,8 @@ a.binaries = [
     for entry in a.binaries
     if not any(unused.lower() in os.path.basename(entry[0]).lower() for unused in _UNUSED_QT_BINARIES)
 ]
+
+a.datas = [entry for entry in a.datas if not _is_unused_discovery_doc(entry[0])]
 
 pyz = PYZ(a.pure)
 
