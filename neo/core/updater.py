@@ -80,6 +80,13 @@ async def download_update(info: UpdateInfo) -> Path:
 def _download_and_verify(info: UpdateInfo) -> Path:
     import httpx
 
+    # Re-checked here and not only in check_for_update: this is the function
+    # that fetches the bytes which get unpacked over the installation, so it
+    # must not rely on a caller having validated the address. A live test
+    # showed an http:// URL getting past this point and being rejected only
+    # because that particular host happened to 404.
+    _require_https(info.url)
+
     target = Path(tempfile.gettempdir()) / f"NEO-{info.version}.zip"
     digest = hashlib.sha256()
     try:

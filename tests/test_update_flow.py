@@ -119,3 +119,15 @@ def test_manifest_must_be_https(url):
 
     with pytest.raises(UpdateError):
         asyncio.run(real_check(url))
+
+
+@pytest.mark.parametrize("url", ["http://example.com/x.zip", "ftp://example.com/x.zip"])
+def test_download_refuses_insecure_urls_on_its_own(url):
+    """The download must enforce this itself rather than trusting the caller:
+    a live check showed an http:// package URL reaching the request and being
+    turned away only because that host returned 404."""
+    from neo.core.updater import download_update
+
+    info = UpdateInfo(version="9.9.9", url=url, sha256="ab")
+    with pytest.raises(UpdateError, match="https"):
+        asyncio.run(download_update(info))
