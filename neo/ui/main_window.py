@@ -306,7 +306,30 @@ class MainWindow(QMainWindow):
         box.setInformativeText(description or "Bu işlem geri alınamayabilir. Onaylıyor musun?")
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         box.setDefaultButton(QMessageBox.StandardButton.No)
-        approved = box.exec() == QMessageBox.StandardButton.Yes
+
+        # open() + await, not exec(). exec() spins a nested Qt event loop
+        # while this coroutine is suspended, and qasync refuses to run other
+        # tasks inside it: the stats timer firing mid-dialog raised
+        # "Cannot enter into task ... while another task is being executed"
+        # and killed the task that was waiting on the answer. That took down
+        # an update mid-install, and the same hazard applied to every
+        # MEDIUM/HIGH confirmation (lock, shutdown, calendar delete).
+        future: asyncio.Future[bool] = asyncio.get_event_loop().create_future()
+
+        def _resolve(_code: int) -> None:
+            if not future.done():
+                clicked = box.standardButton(box.clickedButton())
+                future.set_result(clicked == QMessageBox.StandardButton.Yes)
+
+        box.finished.connect(_resolve)
+        box.open()
+
+        try:
+            approved = await future
+        except asyncio.CancelledError:
+            box.close()
+            raise
+
         self._append("NEO", "Onaylandı." if approved else "Onaylanmadı, işlem iptal edildi.")
         return approved
 
