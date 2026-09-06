@@ -40,15 +40,23 @@ from .theme import DARK_QSS
 
 logger = logging.getLogger(__name__)
 
-ABOUT_TEXT = """<h3>NEO</h3>
+def build_about_text(wake_phrase: str = "Neo uyan") -> str:
+    """Assembled from the live values rather than written out by hand.
+
+    The version used to be a literal "v0.1.0" in this text. After an update
+    actually installed and NEO restarted at 0.1.5, this dialog still said
+    0.1.0 -- so the one screen a user checks to confirm an update reported
+    that nothing had happened.
+    """
+    return f"""<h3>NEO</h3>
 <p>Windows için kişisel yapay zekâ masaüstü asistanı.</p>
 <p><b>Yapabildiklerim (API'siz):</b> saat/tarih, CPU/RAM/GPU/disk durumu,
 hava durumu, takvim notları, uygulama/web sitesi açma, günaydın özeti.</p>
 <p><b>Claude gerektirenler:</b> genel sohbet, web araştırması, karmaşık
 istekler.</p>
 <p><b>Sesli kontrol:</b> 🎙 basılı tutup konuş, ya da "🎓 Neo'yu öğret" ile
-sesini öğretip "Neo" diyerek uyandır.</p>
-<p style="color:#7c8b98;">Phase 1-4 tamamlandı · v0.1.0</p>
+sesini öğretip "{wake_phrase}" diyerek uyandır.</p>
+<p style="color:#7c8b98;">Sürüm {__version__}</p>
 """
 
 ENROLLMENT_SAMPLES = 3
@@ -251,7 +259,7 @@ class MainWindow(QMainWindow):
     def _on_info_clicked(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
-        QMessageBox.about(self, "NEO Hakkında", ABOUT_TEXT)
+        QMessageBox.about(self, "NEO Hakkında", build_about_text(self._wake_phrase))
 
     # -- system tray (stay running in the background) ----------------------
 
