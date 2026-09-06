@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import autostart
+from ..config.version import __version__
+from ..core.updater import UpdateError, apply_update, check_for_update, download_update
 from ..core.agent import Agent, extract_spoken_summary
 from ..core.state import AgentState
 from ..voice.audio_features import has_enough_speech, speech_seconds
@@ -82,10 +84,13 @@ class MainWindow(QMainWindow):
         wake_listener: WakeWordListener | None = None,
         spotter: KeywordSpotter | None = None,
         wake_phrase: str = "Neo uyan",
+        update_manifest_url: str | None = None,
     ) -> None:
         super().__init__()
         self._agent = agent
         self._wake_phrase = wake_phrase
+        self._update_manifest_url = update_manifest_url
+        self._pending_update = None
         self._recorder = recorder
         self._stt = stt
         self._tts = tts
@@ -203,6 +208,14 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self._autostart_toggle)
         self._update_autostart_label()
 
+        # Stays hidden until a check actually finds a newer version, so the
+        # panel doesn't carry a button that does nothing most of the time.
+        self._update_button = QPushButton()
+        self._update_button.setObjectName("UpdateButton")
+        self._update_button.clicked.connect(self._on_update_clicked)
+        self._update_button.hide()
+        control_layout.addWidget(self._update_button)
+
         layout.addWidget(control_panel)
         self._update_enroll_label()
         self._update_wake_toggle_label()
@@ -302,6 +315,86 @@ class MainWindow(QMainWindow):
         if self._active_command_task is not None and not self._active_command_task.done():
             return
         self._stt.unload_if_idle()
+
+    # -- updates -----------------------------------------------------------
+
+    async def check_for_update(self, announce_when_current: bool = False) -> None:
+        """Looks for a newer release and offers it, without interrupting.
+
+        A failed check is deliberately quiet: no manifest URL configured, no
+        internet, or a server hiccup are all normal states for an assistant
+        that has to keep working offline, and none of them are worth a
+        message the user didn't ask for.
+        """
+        if not self._update_manifest_url:
+            if announce_when_current:
+                self._append("NEO", "Güncelleme adresi tanımlı değil.")
+            return
+        try:
+            info = await check_for_update(self._update_manifest_url)
+        except UpdateError as exc:
+            logger.info("Güncelleme kontrolü başarısız: %s", exc)
+            if announce_when_current:
+                self._append("NEO", str(exc))
+            return
+
+        if info is None:
+            logger.info("Güncelleme yok, en son sürüm çalışıyor (%s)", __version__)
+            if announce_when_current:
+                self._append("NEO", f"En son sürümü kullanıyorsun ({__version__}).")
+            return
+
+        self._pending_update = info
+        self._update_button.setText(f"⬇ Güncelleme hazır: {info.version}")
+        self._update_button.show()
+        notes = f" {info.notes}" if info.notes else ""
+        self._append(
+            "NEO",
+            f"Yeni bir sürüm var: {info.version} (şu an {__version__}).{notes} "
+            "Kurmak için yukarıdaki güncelleme düğmesine basabilirsin.",
+        )
+
+    def _on_update_clicked(self) -> None:
+        if self._pending_update is not None:
+            asyncio.ensure_future(self._install_update())
+
+    async def _install_update(self) -> None:
+        info = self._pending_update
+        if info is None:
+            return
+
+        # Replacing the installation and restarting is not something to do
+        # behind the user's back, so it goes through the same confirmation
+        # path as any other high-risk action.
+        approved = await self.confirm_action(
+            "NEO'yu güncelle",
+            f"Sürüm {info.version} indirilip kurulacak ve NEO yeniden başlatılacak.",
+        )
+        if not approved:
+            return
+
+        self._update_button.setEnabled(False)
+        self._update_button.setText("İndiriliyor...")
+        try:
+            package = await download_update(info)
+        except UpdateError as exc:
+            self._append("NEO", f"Güncelleme kurulamadı: {exc}")
+            self._update_button.setEnabled(True)
+            self._update_button.setText(f"⬇ Güncelleme hazır: {info.version}")
+            return
+
+        self._append("NEO", "Güncelleme doğrulandı, kuruluyor. NEO birazdan yeniden başlayacak.")
+        try:
+            apply_update(package)
+        except Exception:
+            logger.exception("Güncelleme uygulanamadı")
+            self._append("NEO", "Güncelleme uygulanamadı, mevcut sürüm çalışmaya devam ediyor.")
+            self._update_button.setEnabled(True)
+            return
+
+        # The helper waits for this process to exit before swapping files.
+        self._quitting = True
+        QApplication.instance().quit()
 
     # -- autostart ---------------------------------------------------------
 

@@ -116,6 +116,7 @@ def main() -> int:
         wake_listener=wake_listener,
         spotter=spotter,
         wake_phrase=settings.wake_phrase,
+        update_manifest_url=settings.update_manifest_url,
     )
     # The confirmation dialog for MEDIUM/HIGH risk tools lives on the GUI,
     # which needs the agent to exist first -- wire it up after the window is
@@ -123,6 +124,10 @@ def main() -> int:
     permissions.set_confirm(window.confirm_action)
     agent.set_listening_control(window.set_listening)
     window.show()
+
+    # Checked in the background so a slow or unreachable update server can
+    # never delay startup; a failure here is silent by design.
+    loop.create_task(window.check_for_update())
 
     with loop:
         return loop.run_forever()
