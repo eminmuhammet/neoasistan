@@ -41,7 +41,17 @@ from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
-_PREFERRED_VOICE_SUBSTRINGS = ("tolga",)
+_PREFERRED_VOICE_SUBSTRINGS = ("tolga", "turkish", "türkçe", "turkce")
+# SAPI reports a voice's language as a hex LCID; 0x41F is Turkish. Matching
+# on this as well as on the name catches Turkish voices whose description is
+# localized or named something other than "Tolga".
+_TURKISH_LCID = "41f"
+
+# Retries before giving up on the online voice. The offline fallback is only
+# acceptable when a Turkish SAPI voice is installed -- otherwise it reads
+# Turkish with an English voice, which the user cannot understand.
+EDGE_ATTEMPTS = 3
+EDGE_RETRY_SECONDS = 0.8
 
 _SVSF_ASYNC = 1
 _SVSF_PURGE_BEFORE_SPEAK = 2
@@ -56,6 +66,31 @@ class TextToSpeech(Protocol):
 
 class TTSUnavailableError(Exception):
     """Raised when a text-to-speech engine cannot be used."""
+
+
+def _select_turkish_voice(voice) -> bool:
+    """Points a SAPI voice object at an installed Turkish voice.
+
+    Returns False when none is installed, so the caller can report that
+    rather than silently speaking Turkish in whatever the system default is.
+    """
+    for token in voice.GetVoices():
+        try:
+            description = token.GetDescription().lower()
+        except Exception:
+            continue
+        if any(s in description for s in _PREFERRED_VOICE_SUBSTRINGS):
+            voice.Voice = token
+            return True
+        try:
+            if _TURKISH_LCID in str(token.GetAttribute("Language")).lower():
+                voice.Voice = token
+                return True
+        except Exception:
+            # Not every token exposes every attribute; name matching above
+            # is the primary path.
+            continue
+    return False
 
 
 class SapiTTS:
@@ -84,10 +119,16 @@ class SapiTTS:
                     "Windows konuşma motoruna (SAPI) erişilemedi."
                 ) from exc
 
-            for token in voice.GetVoices():
-                if any(s in token.GetDescription().lower() for s in _PREFERRED_VOICE_SUBSTRINGS):
-                    voice.Voice = token
-                    break
+            if not _select_turkish_voice(voice):
+                # Windows falls back to its default voice, which on this
+                # machine is US English -- it will pronounce Turkish text as
+                # if it were English, and the result is not understandable.
+                # Say so once rather than letting it sound like a bug.
+                logger.warning(
+                    "Türkçe SAPI sesi bulunamadı; Windows varsayılan sesi "
+                    "Türkçeyi doğru okuyamaz. Ayarlar > Saat ve Dil > Konuşma "
+                    "bölümünden Türkçe ses eklenebilir."
+                )
 
             voice.Speak(text, _SVSF_ASYNC)
             while not voice.WaitUntilDone(int(_POLL_INTERVAL_SECONDS * 1000)):
@@ -136,8 +177,32 @@ class EdgeTTS:
             temp_path = handle.name
 
         try:
-            communicate = edge_tts.Communicate(text, self._voice)
-            await communicate.save(temp_path)
+            # A dropped websocket used to fall straight through to the
+            # offline fallback, which on a machine with no Turkish SAPI voice
+            # means an English voice reading Turkish aloud -- unintelligible.
+            # A brief retry costs a second and covers the transient network
+            # blips that caused it (see logs/neo.log 22:43:57).
+            last_error: Exception | None = None
+            for attempt in range(EDGE_ATTEMPTS):
+                try:
+                    communicate = edge_tts.Communicate(text, self._voice)
+                    await communicate.save(temp_path)
+                    last_error = None
+                    break
+                except Exception as exc:  # network/websocket flakiness
+                    last_error = exc
+                    if self._stop_event.is_set():
+                        return
+                    if attempt + 1 < EDGE_ATTEMPTS:
+                        logger.warning(
+                            "Edge TTS denemesi %d/%d başarısız, tekrar denenecek",
+                            attempt + 1,
+                            EDGE_ATTEMPTS,
+                        )
+                        await asyncio.sleep(EDGE_RETRY_SECONDS)
+            if last_error is not None:
+                raise last_error
+
             if self._stop_event.is_set():
                 return
             await asyncio.to_thread(self._play, temp_path)
