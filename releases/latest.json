@@ -1,6 +1,6 @@
 {
-  "version": "0.1.1",
-  "url": "https://raw.githubusercontent.com/eminmuhammet/neoasistan/main/releases/NEO-0.1.1.zip",
-  "sha256": "14811ef2540ef7afbd30e216cd309da070a719705f2bebd3b00c011706a2030b",
-  "notes": "Güncelleme akışı testi: takvim düzeltmeleri ve uyandırma doğrulaması."
+  "version": "0.1.2",
+  "url": "https://raw.githubusercontent.com/eminmuhammet/neoasistan/main/releases/NEO-0.1.2.zip",
+  "sha256": "05610c2df66b0d907444e55e4440f9f128bd0b577e7162ee90623a317b74ae80",
+  "notes": "Güncelleme kurulumu düzeltildi: uygulama artık düzgün kapanıyor ve doğru yorumlayıcıyla yeniden başlıyor."
 }

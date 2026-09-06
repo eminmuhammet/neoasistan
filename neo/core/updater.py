@@ -137,14 +137,36 @@ def apply_update(zip_path: Path, target_dir: Path | None = None) -> None:
     entries = list(staging.iterdir())
     source = entries[0] if len(entries) == 1 and entries[0].is_dir() else staging
 
-    relaunch = sys.executable if getattr(sys, "frozen", False) else str(target / "run_neo.py")
+    # sys.executable is the frozen exe when packaged and the venv's
+    # interpreter when running from source, so it relaunches correctly in
+    # both cases. The previous version passed run_neo.py to `start`, which
+    # hands the file to whatever Python is registered for .py -- typically
+    # the system install, which has none of NEO's dependencies.
+    if getattr(sys, "frozen", False):
+        relaunch = f'start "" "{sys.executable}"'
+    else:
+        relaunch = f'start "" "{sys.executable}" "{target / "run_neo.py"}"'
+
+    # Wait for this process to actually exit rather than sleeping a fixed
+    # three seconds and hoping: Windows locks files belonging to a running
+    # process, so copying too early leaves the install half-updated. Capped
+    # so a process that never dies can't wedge the helper forever.
+    pid = os.getpid()
     script = Path(tempfile.gettempdir()) / "neo_update.cmd"
     script.write_text(
         "@echo off\r\n"
-        "echo NEO guncelleniyor...\r\n"
-        f'"{sys.executable}" -c "import time; time.sleep(3)"\r\n'
+        "echo NEO guncelleniyor, lutfen bekleyin...\r\n"
+        "set /a tries=0\r\n"
+        ":waitloop\r\n"
+        f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\r\n'
+        "if errorlevel 1 goto ready\r\n"
+        "set /a tries+=1\r\n"
+        "if %tries% GEQ 30 goto ready\r\n"
+        "timeout /t 1 /nobreak >nul\r\n"
+        "goto waitloop\r\n"
+        ":ready\r\n"
         f'robocopy "{source}" "{target}" /E /IS /IT /R:2 /W:1 >nul\r\n'
-        f'start "" "{relaunch}"\r\n'
+        f"{relaunch}\r\n"
         'del "%~f0"\r\n',
         encoding="utf-8",
     )

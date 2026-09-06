@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction
@@ -392,9 +393,30 @@ class MainWindow(QMainWindow):
             self._update_button.setEnabled(True)
             return
 
-        # The helper waits for this process to exit before swapping files.
+        # The helper waits for this process to exit before swapping files,
+        # so shutting down properly is part of the update working at all.
+        self._shutdown()
+
+    def _shutdown(self) -> None:
+        """Ends the process for real.
+
+        QApplication.quit() alone was not enough: under qasync the asyncio
+        loop is the one running the show (`loop.run_forever()` in main), so
+        Qt quitting left the process alive -- the updater's helper then
+        copied over files that were still locked, and NEO sat on screen
+        saying it was about to restart while nothing happened.
+        """
         self._quitting = True
+        self.close()  # runs the closeEvent cleanup: TTS, mic, wake loop
         QApplication.instance().quit()
+
+        loop = asyncio.get_event_loop()
+        loop.call_soon(loop.stop)
+
+        # Audio and model threads are not always cooperative about exiting;
+        # after cleanup has run and the loop has been asked to stop, leaving
+        # the process alive would strand the update half-applied.
+        QTimer.singleShot(3000, lambda: os._exit(0))
 
     # -- autostart ---------------------------------------------------------
 

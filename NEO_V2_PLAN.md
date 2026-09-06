@@ -260,6 +260,23 @@ sabah brifingi + kritik uyarılar; gerisi kullanıcı açarsa.
 
 ---
 
+---
+
+## Sohbet arayüzü — küçük ama günlük kullanımda hissedilen
+
+**Yeni dosya değil**, `neo/ui/chat_view.py` üzerinde çalışma. ~0.5 gün.
+
+- **Mesaj saati** — her balonun altında/yanında gönderilme saati (`14:32`).
+  Konuşma geçmişi `ConversationStore`'da zaten `timestamp` ile saklanıyor,
+  yani veri var; sadece balona yazdırılmıyor.
+- **Mesajı kopyalama** — şu an metin fareyle seçilebiliyor
+  (`TextSelectableByMouse`) ama uzun bir cevabı seçmek zahmetli. Balonun
+  üstüne gelince beliren bir kopyala düğmesi ve/veya sağ tık menüsü.
+
+Not: Bunlar 2026-09-06'da kullanıcı tarafından istendi, V2'ye bırakıldı.
+
+---
+
 ## Yapmayacaklarımız (ve nedeni)
 
 - **Bildirim merkezi:** Windows bildirimlerini okumak `UserNotificationListener`
