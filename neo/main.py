@@ -148,7 +148,29 @@ def build_registry(settings: Settings) -> ToolRegistry:
     return registry
 
 
+def _acquire_single_instance_lock():
+    """Windows named-mutex ile tek örnek garantisi.
+    İkinci başlatma girişimi varolan pencereyi öne getirir ve çıkar."""
+    import ctypes
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\NEO_SingleInstance_v1")
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        return None
+    return mutex  # tutulmazsa GC mutex'i serbest bırakır
+
+
 def main() -> int:
+    _mutex = _acquire_single_instance_lock()
+    if _mutex is None:
+        # Zaten çalışıyor — sadece çık
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "NEO zaten çalışıyor. Sistem tepsisindeki simgeye tıklayın.",
+            "NEO",
+            0x40,  # MB_ICONINFORMATION
+        )
+        return 0
+
     settings = load_settings()
     setup_logging(settings.log_dir, settings.log_level)
     logger.info("NEO başlatılıyor (model=%s)", settings.model)
