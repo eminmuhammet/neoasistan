@@ -220,6 +220,17 @@ class WakeWordListener:
         try:
             while self._running:
                 try:
+                    # The confirm model has no other owner or timer checking
+                    # on it (unlike the main STT model, which the GUI's idle
+                    # timer unloads) -- left unmanaged, the first wake-phrase
+                    # confirmation of the session loads it and it then sits
+                    # resident in memory for as long as continuous listening
+                    # stays on, which for most users is "always". Cheap to
+                    # check every loop tick: it's a single monotonic-time
+                    # comparison unless actually time to unload.
+                    if self._confirm_stt is not None:
+                        self._confirm_stt.unload_if_idle()
+
                     if is_muted is not None and is_muted():
                         # NEO is speaking: don't listen to our own voice
                         # coming back through the microphone.
