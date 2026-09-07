@@ -22,10 +22,11 @@ class FakeSTT:
         return self.transcript
 
 
-def _listener(tmp_path, confirm_stt, phrase="Neo uyan"):
+def _listener(tmp_path, confirm_stt, phrase="Neo uyan", confirm_threshold=None):
     spotter = KeywordSpotter(tmp_path / "t.npz")
+    kwargs = {} if confirm_threshold is None else {"confirm_threshold": confirm_threshold}
     return WakeWordListener(
-        spotter, FakeSTT(), wake_phrase=phrase, confirm_stt=confirm_stt
+        spotter, FakeSTT(), wake_phrase=phrase, confirm_stt=confirm_stt, **kwargs
     )
 
 
@@ -101,3 +102,23 @@ def test_confirmation_is_rate_limited(tmp_path, monkeypatch):
     clock[0] += ww.CONFIRM_COOLDOWN_SECONDS
     assert asyncio.run(listener._confirm_wake_phrase(AUDIO)) is True
     assert stt.calls == 2
+
+
+def test_confirm_threshold_is_configurable_per_listener(tmp_path):
+    """The right false-accept/false-reject tradeoff genuinely depends on
+    the room and microphone -- every wake-word engine exposes this as a
+    tunable sensitivity rather than one fixed value for everyone."""
+    marginal = FakeSTT("Ne o ya")  # scores ~0.80 against "Neo uyan"
+
+    lenient = _listener(tmp_path, marginal, confirm_threshold=0.5)
+    assert asyncio.run(lenient._confirm_wake_phrase(AUDIO)) is True
+
+    strict = _listener(tmp_path, marginal, confirm_threshold=0.99)
+    assert asyncio.run(strict._confirm_wake_phrase(AUDIO)) is False
+
+
+def test_confirm_threshold_defaults_to_the_module_constant(tmp_path):
+    import neo.voice.wake_word as ww
+
+    listener = _listener(tmp_path, FakeSTT("Neo uyan"))
+    assert listener._confirm_threshold == ww.WAKE_PHRASE_THRESHOLD

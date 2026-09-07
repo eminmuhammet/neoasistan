@@ -273,6 +273,7 @@ def main() -> int:
         stt,
         wake_phrase=settings.wake_phrase,
         confirm_stt=confirm_stt,
+        confirm_threshold=settings.wake_sensitivity,
     )
     window = MainWindow(
         agent,

@@ -123,10 +123,20 @@ class WakeWordListener:
         config: WakeWordConfig | None = None,
         wake_phrase: str | None = None,
         confirm_stt: WhisperSTT | None = None,
+        confirm_threshold: float = WAKE_PHRASE_THRESHOLD,
     ) -> None:
         self._spotter = spotter
         self._stt = stt
         self._config = config or WakeWordConfig()
+        # Configurable rather than hard-coded: the right operating point on
+        # the false-accept/false-reject curve is genuinely per-user (a
+        # quiet room vs. a noisy one, a directional mic vs. a laptop's
+        # built-in one), the same reasoning every wake-word engine's own
+        # "sensitivity" setting is built on (Porcupine, openWakeWord,
+        # Home Assistant's wake-word docs all expose this rather than
+        # picking one value for everyone). WAKE_PHRASE_THRESHOLD stays the
+        # default for anyone who never touches it.
+        self._confirm_threshold = confirm_threshold
         # Acoustic matching alone could not separate the wake phrase from
         # ordinary speech on this user's voice: with clean ~1s enrollments,
         # their own three takes sat 35-44 apart while nine of ten windows of
@@ -366,7 +376,7 @@ class WakeWordListener:
             return False
 
         score = similarity(transcript, self._wake_phrase)
-        accepted = score >= WAKE_PHRASE_THRESHOLD
+        accepted = score >= self._confirm_threshold
         logger.info(
             "Uyandırma doğrulama: %r -> benzerlik %.2f (%s)",
             transcript,

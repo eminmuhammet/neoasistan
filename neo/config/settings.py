@@ -132,6 +132,15 @@ class Settings:
     # and two words are an easy target for a small model. Empty disables
     # confirmation and leaves the acoustic verdict final.
     wake_confirm_model: str = "base"
+    # How closely a confirmation transcript must match wake_phrase to
+    # accept it, 0..1. Lower = fewer "I said it, why didn't it wake up"
+    # repeats but more accidental wakes on unrelated speech; higher is the
+    # reverse. 0.78 is tuned from this project's own live logs (see
+    # neo/voice/wake_word.py's WAKE_PHRASE_THRESHOLD) -- every wake-word
+    # engine exposes some form of this as a user-tunable "sensitivity"
+    # rather than one fixed value, since the right tradeoff genuinely
+    # depends on the room and microphone.
+    wake_sensitivity: float = 0.78
     # Opt-in: this opens a network port (LAN-reachable, token-protected --
     # see neo/web/server.py), which is not something a fresh install should
     # do without the user asking for it.
@@ -173,6 +182,7 @@ def load_settings() -> Settings:
         update_manifest_url=os.getenv("NEO_UPDATE_MANIFEST_URL") or None,
         wake_phrase=os.getenv("NEO_WAKE_PHRASE", "Neo uyan"),
         wake_confirm_model=os.getenv("NEO_WAKE_CONFIRM_MODEL", "base"),
+        wake_sensitivity=float(os.getenv("NEO_WAKE_SENSITIVITY", "0.78")),
         enable_web_panel=os.getenv("NEO_ENABLE_WEB_PANEL", "").strip().lower() in ("1", "true", "yes"),
         web_panel_port=int(os.getenv("NEO_WEB_PANEL_PORT", "8765")),
     )
