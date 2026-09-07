@@ -272,7 +272,15 @@ class KeywordSpotter:
 
         spoken = extract_speech_segment(audio, self._sample_rate)
         peak = float(np.abs(spoken).max()) if spoken.size else 0.0
+        logger.info(
+            "enroll: raw=%d samples, spoken=%d samples (%.2fs), peak=%.4f",
+            audio.size, spoken.size, spoken.size / float(self._sample_rate), peak,
+        )
         if spoken.size < int(_MIN_WORD_SECONDS * self._sample_rate) or peak < _MIN_ENROLL_PEAK:
+            logger.warning(
+                "enroll reddedildi: spoken_samples=%d (min=%d), peak=%.4f (min=%.4f)",
+                spoken.size, int(_MIN_WORD_SECONDS * self._sample_rate), peak, _MIN_ENROLL_PEAK,
+            )
             return False
         self._templates.append(normalize_features(extract_mfcc(spoken, self._sample_rate)))
         self._durations.append(spoken.size / float(self._sample_rate))
