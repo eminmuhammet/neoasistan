@@ -45,11 +45,14 @@ _STATE_BREATHE: dict[AgentState, float] = {
 # timer against a render that is already busy. 30 fps is the ceiling; idle
 # deliberately sits well under it to keep the machine quiet.
 _STATE_TICK_MS: dict[AgentState, int] = {
-    AgentState.IDLE:       66,   # ~15 fps — slow breathing needs no more
+    # Idle is where NEO spends nearly all of its life, and the idle sphere
+    # turns at 0.0002 rad/ms -- 10 fps is visually indistinguishable there
+    # and costs a third of a core instead of half of one.
+    AgentState.IDLE:       100,
     AgentState.LISTENING:  40,
     AgentState.PROCESSING: 33,
     AgentState.SPEAKING:   33,
-    AgentState.ERROR:      66,
+    AgentState.ERROR:      100,
 }
 
 # Camera/projection constants
