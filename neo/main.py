@@ -35,6 +35,8 @@ from .tools.calendar import (
 from .tools.document_search import ReadDocumentTool
 from .tools.filesystem import FindFileTool, OpenFolderTool
 from .tools.media import GetVolumeTool, MediaControlTool, SetMuteTool, SetVolumeTool
+from .tools.gmail import CreateEmailDraftTool, ReadRecentEmailsTool, SendEmailTool
+from .tools.gmail_client import GmailClient
 from .tools.google_calendar import GoogleCalendarSync
 from .tools.preferences import (
     ForgetPreferenceTool,
@@ -101,6 +103,18 @@ def build_registry(settings: Settings) -> ToolRegistry:
     registry.register(GetCalendarNotesTool(calendar_store))
     registry.register(DeleteCalendarNoteTool(calendar_store, google_sync=google_sync))
     registry.register(UpdateCalendarNoteTool(calendar_store, google_sync=google_sync))
+
+    # Same credentials.json as calendar sync (same Google Cloud app/client
+    # id), but its own token file -- the calendar token was authorized for
+    # calendar scopes only and would fail with insufficient-scope if reused
+    # here (see NEO_V2_PLAN.md item 11).
+    gmail_client = GmailClient(
+        credentials_path=settings.data_dir.parent / "credentials.json",
+        token_path=settings.data_dir / "gmail_token.json",
+    )
+    registry.register(ReadRecentEmailsTool(gmail_client))
+    registry.register(CreateEmailDraftTool(gmail_client))
+    registry.register(SendEmailTool(gmail_client))
 
     registry.register(FindFileTool())
     registry.register(OpenFolderTool())
