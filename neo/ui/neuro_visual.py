@@ -40,19 +40,19 @@ _STATE_BREATHE: dict[AgentState, float] = {
     AgentState.ERROR:      0.0010,
 }
 _STATE_TICK_MS: dict[AgentState, int] = {
-    AgentState.IDLE:       33,
-    AgentState.LISTENING:  25,
-    AgentState.PROCESSING: 20,
-    AgentState.SPEAKING:   20,
-    AgentState.ERROR:      33,
+    AgentState.IDLE:       50,   # ~20 fps idle — saves GPU/CPU
+    AgentState.LISTENING:  33,
+    AgentState.PROCESSING: 25,
+    AgentState.SPEAKING:   25,
+    AgentState.ERROR:      50,
 }
 
 # Camera/projection constants
 _CAM_DIST    = 3.2   # perspective camera distance (sphere radius = 1)
 _CLIP_SCALE  = 0.80  # sphere fills 80 % of widget height in clip space
 
-_N_SPHERE    = 5000  # main particle cloud
-_N_STARS     = 300   # background star field (fixed, no rotation)
+_N_SPHERE    = 4000  # main particle cloud
+_N_STARS     = 250   # background star field (fixed, no rotation)
 
 # Background colour (matches theme)
 _BG = np.array([0.024, 0.039, 0.031], dtype=np.float32)
@@ -117,14 +117,14 @@ def _true_gauss_blur(img: np.ndarray, sigma: float) -> np.ndarray:
         pad = [(0, 0)] * 3
         pad[axis] = (r, r)
         p = np.pad(arr, pad, mode='edge')
-        out = np.zeros_like(arr)
-        for i, ki in enumerate(k):
-            sl: list = [slice(None)] * 3
-            sl[axis] = slice(i, i + arr.shape[axis])
-            out += ki * p[tuple(sl)]
-        return out
+        # Stack shifted views and dot with kernel — no Python loop
+        views = np.stack(
+            [p.take(range(i, i + arr.shape[axis]), axis=axis) for i in range(len(k))],
+            axis=0,
+        )
+        return np.tensordot(k, views, axes=([0], [0]))
 
-    return _conv(_conv(img, 1), 0)   # horizontal then vertical
+    return _conv(_conv(img, 1), 0)
 
 
 class _ParticleData:
