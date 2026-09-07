@@ -63,6 +63,26 @@ def test_real_attempts_from_the_live_log_are_accepted(transcript):
     assert matches_wake_phrase(transcript, PHRASE) is True
 
 
+@pytest.mark.parametrize("transcript", ["uyan.", "uyan", "Uyan!"])
+def test_the_phrases_own_trailing_word_alone_is_accepted(transcript):
+    """The bug that forced saying the phrase twice: logs/neo.log,
+    2026-09-07 13:23:45 -- a genuine attempt came back as just 'uyan.'
+    (the softer, quieter "Neo" got dropped, likely trimmed by VAD or too
+    quiet to transcribe) and scored only 0.67 against the full phrase,
+    below the 0.78 threshold, so the user had to repeat themselves for
+    something they already said correctly."""
+    assert matches_wake_phrase(transcript, PHRASE) is True
+
+
+def test_a_single_leading_word_alone_is_still_rejected():
+    """The fix credits a matched TAIL of the phrase (the distinctive,
+    harder-to-swallow second word), not any single word -- 'neo' alone
+    must stay rejected the same as before, or generic filler containing
+    just the name would start waking NEO up."""
+    assert matches_wake_phrase("neo", PHRASE) is False
+    assert matches_wake_phrase("ne o", PHRASE) is False
+
+
 def test_the_phrase_itself_is_the_weak_link():
     """Documents why no threshold fixes this: 'Ne o ya?' (filler) and
     'Ne yok, uyan.' (a real attempt) score within 0.04 of each other, so the

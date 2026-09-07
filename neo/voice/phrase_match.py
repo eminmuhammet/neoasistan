@@ -40,7 +40,38 @@ def similarity(candidate: str, phrase: str) -> float:
             window = " ".join(words[start : start + size])
             best_window = max(best_window, SequenceMatcher(None, window, b).ratio())
 
-    return max(whole, best_window)
+    return max(whole, best_window, _best_trailing_suffix_match(a, b))
+
+
+def _best_trailing_suffix_match(candidate: str, phrase: str) -> float:
+    """Credit for a transcript that matches only the tail of the phrase.
+
+    Observed live (logs/neo.log, 2026-09-07 13:23:45): a genuine "Neo uyan"
+    came back from Whisper as just 'uyan.' -- the softer, quieter first
+    word got trimmed by VAD or simply spoken too quietly to transcribe, and
+    the bare second word scored only 0.67 (whole-string) against the full
+    two-word phrase, below the 0.78 acceptance threshold. That forced the
+    user to repeat themselves for something they'd already said correctly.
+
+    Matching the candidate against a trailing chunk of the phrase (rather
+    than the whole phrase) removes the length penalty a dropped leading
+    word would otherwise cause, discounted by how much of the phrase that
+    chunk actually covers so a full match still always wins outright and a
+    single trailing word of a long phrase can't pass on its own.
+    """
+    phrase_words = phrase.split()
+    if len(phrase_words) < 2:
+        return 0.0
+    best = 0.0
+    for start in range(1, len(phrase_words)):
+        remaining = len(phrase_words) - start
+        if remaining < max(1, len(phrase_words) // 2):
+            continue
+        suffix = " ".join(phrase_words[start:])
+        ratio = SequenceMatcher(None, candidate, suffix).ratio()
+        coverage = remaining / len(phrase_words)
+        best = max(best, ratio * (0.6 + 0.4 * coverage))
+    return best
 
 
 def matches_wake_phrase(transcript: str, phrase: str, threshold: float = 0.78) -> bool:
