@@ -65,3 +65,11 @@ def test_master_address_is_not_framed_as_blind_obedience():
     honesty/safety framing intact."""
     lowered = SYSTEM_PROMPT.lower()
     assert "körü körüne" in lowered or "yanlış" in lowered
+
+
+def test_system_prompt_explains_when_to_use_run_task():
+    """Claude has to know run_task exists and, just as importantly, when
+    NOT to reach for it -- a simple one-step request going through the
+    planner would just add latency for nothing."""
+    assert "run_task" in SYSTEM_PROMPT
+    assert "tek adım" in SYSTEM_PROMPT.lower()

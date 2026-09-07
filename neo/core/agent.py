@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..config.settings import ConfigError, Settings
@@ -104,6 +105,16 @@ recall_preferences kullan. Bir bilgi artık doğru değilse veya \
 kullanıcı unutulmasını isterse forget_preference kullan.
 - Bildiğin bilgiler her mesajda sana ayrıca veriliyor (aşağıda); \
 bunları doğal bir şekilde kullan, her cümlede tekrar etme.
+
+Çok adımlı görevler hakkında:
+- İstek birden fazla bağımsız adım gerektiriyorsa VE bir adımın gerçekten \
+işe yarayıp yaramadığının kontrol edilmesi gerekiyorsa (ör. "ekrana bak, \
+hatayı bul, düzelt, tekrar bakıp kontrol et") run_task aracını kullan. \
+Bu araç adımları senin yerine sırayla çalıştırıp her birini doğrular.
+- Basit, tek adımlı isteklerde (ör. "saat kaç", "şuna not al", "ekrana \
+bak") run_task KULLANMA -- gereksiz yavaşlatır, doğrudan yap.
+- run_task'a hedefi net ve somut anlat; araç sonucu geldiğinde onu \
+kullanıcıya kendi cümlelerinle özetle, ham veriyi olduğu gibi yapıştırma.
 """
 
 SPOKEN_SUMMARY_PREFIX = "SESLİ ÖZET:"
@@ -235,6 +246,22 @@ def _tool_result_content(result: dict) -> str | list[dict]:
     ]
 
 
+@dataclass
+class SubtaskResult:
+    """What Agent.run_subtask hands back to the task planner: the final
+    text Claude produced, plus every real tool call made along the way.
+
+    The trace exists specifically so a step's *verification* has actual
+    evidence to judge instead of only the closing sentence -- a live run
+    showed a properly skeptical verifier refusing to certify "the time is
+    18:11" on faith alone, since prose can't be told apart from a real tool
+    result without seeing the tool result itself.
+    """
+
+    text: str
+    tool_calls: list[dict] = field(default_factory=list)
+
+
 class Agent:
     def __init__(
         self,
@@ -358,6 +385,21 @@ class Agent:
             self._llm = LLMClient(self._settings)
         return self._llm
 
+    async def raw_llm_call(
+        self, messages: list[dict], system: str, tools: list[dict], max_tokens: int = 1024
+    ):
+        """A single LLM call outside the tool-use loop, for the task
+        planner's own meta-operations (breaking a goal into steps,
+        judging whether a step actually succeeded). Those need a specific
+        forced tool schema of their own, not the full tool registry a real
+        conversational turn or task step gets -- planning what to do and
+        actually doing it are different operations, and giving the planner
+        access to real tools while it is only supposed to be deciding on
+        steps would let it wander into acting instead of planning.
+        """
+        llm = self._ensure_client()
+        return await asyncio.to_thread(llm.send, messages, system, tools, max_tokens)
+
     def _maybe_toggle_research_mode(self, text: str) -> str | None:
         """Handles "araştırma modu" / "araştırma modunu kapat" locally --
         no LLM call needed just to flip a switch."""
@@ -402,7 +444,7 @@ class Agent:
             return local_reply
 
         try:
-            llm = self._ensure_client()
+            self._ensure_client()
         except ConfigError as exc:
             return str(exc)
 
@@ -418,11 +460,43 @@ class Agent:
             system_prompt += RESEARCH_MODE_PROMPT
         max_tokens = MAX_TOKENS_RESEARCH if self.research_mode else MAX_TOKENS_DEFAULT
 
-        for _ in range(MAX_TOOL_ITERATIONS):
+        reply = await self._run_tool_loop(self._context, system_prompt, max_tokens)
+        self._record("assistant", reply)
+        return reply
+
+    async def _run_tool_loop(
+        self,
+        context: ConversationContext,
+        system_prompt: str,
+        max_tokens: int = MAX_TOKENS_DEFAULT,
+        max_iterations: int = MAX_TOOL_ITERATIONS,
+        tool_trace: list[dict] | None = None,
+    ) -> str:
+        """Drives one bounded "ask Claude, run whatever tools it calls, ask
+        again" exchange until Claude answers with plain text or the
+        iteration budget runs out.
+
+        Factored out of handle_message so the task planner's per-step
+        sub-goals (core/planner.py) can reuse the exact same LLM-call,
+        tool-execution and permission-check machinery against their own
+        throwaway context, instead of the planner re-implementing (and
+        risking drifting out of sync with) this loop.
+
+        `tool_trace`, if given a list, gets each tool call actually made
+        appended to it as {"name", "input", "result"} -- run_subtask uses
+        this so the planner's verification step can check real tool output,
+        not just whatever prose Claude chose to summarize it as. A live
+        run surfaced exactly this gap: asked to verify a step whose only
+        evidence was the closing sentence "the time is 18:11", a properly
+        skeptical verifier correctly refused to just take that on faith,
+        with no way to tell a real tool call from a made-up answer.
+        """
+        llm = self._ensure_client()
+        for _ in range(max_iterations):
             try:
                 response = await asyncio.to_thread(
                     llm.send,
-                    self._context.messages,
+                    context.messages,
                     system_prompt,
                     [*self._registry.anthropic_tools(), WEB_SEARCH_TOOL],
                     max_tokens,
@@ -430,14 +504,12 @@ class Agent:
             except LLMRequestError as exc:
                 return str(exc)
 
-            self._context.add_assistant(response.content)
+            context.add_assistant(response.content)
 
             tool_uses = [block for block in response.content if block.type == "tool_use"]
             if not tool_uses:
                 text_blocks = [block.text for block in response.content if block.type == "text"]
-                reply = "\n".join(text_blocks).strip() or "..."
-                self._record("assistant", reply)
-                return reply
+                return "\n".join(text_blocks).strip() or "..."
 
             for block in tool_uses:
                 tool = self._registry.get(block.name)
@@ -450,6 +522,51 @@ class Agent:
                     tool_result = await self._registry.execute(block.name, block.input)
                     result = tool_result.to_dict()
 
-                self._context.add_tool_result(block.id, _tool_result_content(result))
+                if tool_trace is not None:
+                    tool_trace.append({"name": block.name, "input": block.input, "result": result})
+
+                context.add_tool_result(block.id, _tool_result_content(result))
 
         return "Bu istek çok karmaşık hale geldi, tekrar dener misin?"
+
+    async def run_subtask(
+        self,
+        goal_context: str,
+        instruction: str,
+        max_tokens: int = MAX_TOKENS_DEFAULT,
+        max_iterations: int = MAX_TOOL_ITERATIONS,
+    ) -> "SubtaskResult":
+        """Runs one isolated tool-use exchange for the task planner -- a
+        throwaway ConversationContext, not the user's own conversation.
+
+        Deliberately does not touch self._context or self._record(): a
+        planner step is internal bookkeeping toward a goal the user asked
+        for once, not a new message the user typed. Recording it to
+        conversation history would replay a one-sided internal monologue
+        into the transcript on the next restart, and mixing it into the
+        live chat context could confuse a later, unrelated question with
+        half-finished task chatter.
+
+        Returns both the final text and the raw tool-call trace, not just
+        text -- the planner's verification step needs the trace as actual
+        evidence of what happened, not only Claude's own account of it.
+        """
+        try:
+            self._ensure_client()
+        except ConfigError as exc:
+            return SubtaskResult(str(exc), [])
+
+        context = ConversationContext()
+        context.add_user(instruction)
+        system_prompt = (
+            SYSTEM_PROMPT
+            + _current_date_context()
+            + _preference_context(self._preference_store)
+            + _mode_context(self._mode_manager)
+            + goal_context
+        )
+        tool_trace: list[dict] = []
+        text = await self._run_tool_loop(
+            context, system_prompt, max_tokens, max_iterations, tool_trace=tool_trace
+        )
+        return SubtaskResult(text, tool_trace)

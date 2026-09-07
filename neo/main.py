@@ -12,10 +12,12 @@ from .config.settings import Settings, load_settings
 from .core.access_mode import AccessModeManager
 from .core.agent import Agent
 from .core.permissions import PermissionManager
+from .core.planner import TaskPlanner
 from .logging_setup import setup_logging
 from .memory.calendar_store import CalendarStore
 from .memory.conversation_store import ConversationStore
 from .memory.preference_store import PreferenceStore
+from .memory.task_store import TaskStore
 from .tools.applications import OpenApplicationTool, OpenWebsiteTool
 from .tools.base import ToolRegistry
 from .tools.calendar import (
@@ -31,6 +33,7 @@ from .tools.preferences import (
     RecallPreferencesTool,
     RememberPreferenceTool,
 )
+from .tools.planning import RunTaskTool
 from .tools.power import LockComputerTool, RestartComputerTool, ShutdownComputerTool
 from .tools.screen import CaptureScreenTool
 from .tools.system_info import (
@@ -124,6 +127,17 @@ def main() -> int:
         preference_store=preference_store,
         mode_manager=mode_manager,
     )
+
+    # run_task needs a reference to the already-constructed agent (it drives
+    # steps through agent.run_subtask, reusing the exact same tool loop and
+    # permission checks as a normal message), so it is registered onto the
+    # registry after the agent exists rather than while build_registry() is
+    # building it -- the registry object itself is the same one agent holds
+    # a reference to, so mutating it here still reaches agent's tool loop.
+    task_store = TaskStore(settings.data_dir / "tasks.db")
+    planner = TaskPlanner(agent, task_store)
+    registry.register(RunTaskTool(planner))
+
     recorder = PushToTalkRecorder()
     stt = WhisperSTT(model_size=settings.whisper_model, device=settings.whisper_device)
     tts = FallbackTTS(EdgeTTS(), SapiTTS())
