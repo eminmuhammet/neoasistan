@@ -30,6 +30,7 @@ from .tools.calendar import (
     GetCalendarNotesTool,
     UpdateCalendarNoteTool,
 )
+from .tools.document_search import ReadDocumentTool
 from .tools.filesystem import FindFileTool, OpenFolderTool
 from .tools.google_calendar import GoogleCalendarSync
 from .tools.preferences import (
@@ -100,6 +101,7 @@ def build_registry(settings: Settings) -> ToolRegistry:
 
     registry.register(FindFileTool())
     registry.register(OpenFolderTool())
+    registry.register(ReadDocumentTool())
 
     registry.register(LockComputerTool())
     registry.register(ShutdownComputerTool())

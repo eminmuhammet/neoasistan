@@ -37,3 +37,10 @@ Pillow>=10.0
 # corner aborts everything); keyboard gives the Ctrl+Alt+Shift+Q panic hotkey
 pyautogui>=0.9.54
 keyboard>=0.13.5
+
+# V2 -- document intelligence (read PDF/Word/Excel text so Claude can
+# summarize it, see NEO_V2_PLAN.md item 8; semantic/embedding search is a
+# later phase, this just extracts text)
+pypdf>=6.0
+python-docx>=1.2
+openpyxl>=3.1
