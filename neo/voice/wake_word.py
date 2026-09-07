@@ -255,7 +255,23 @@ class WakeWordListener:
                         was_muted = False
                         self._drain()
                         rolling = np.zeros(0, dtype="float32")
-                        command_buffer = None
+                        if command_buffer is not None:
+                            # A capture opened by the wake word is still
+                            # live and the mute was almost certainly NEO's
+                            # own activation chime, which plays immediately
+                            # after waking. Dropping the capture here left
+                            # the interface on "Dinliyor" forever while the
+                            # listener quietly went back to watching for the
+                            # wake word -- the user had said nothing wrong
+                            # and had nothing to react to. Restart the
+                            # capture instead, so the command they are about
+                            # to speak is the one that gets recorded.
+                            command_buffer = np.zeros(0, dtype="float32")
+                            silence_run = 0
+                            heard_speech = False
+                            command_deadline = (
+                                time.monotonic() + self._config.command_timeout_seconds
+                            )
 
                     new_audio = await asyncio.to_thread(self._collect_chunk, step_samples)
                     if new_audio.size == 0:
@@ -353,6 +369,11 @@ class WakeWordListener:
                     command_deadline = time.monotonic() + self._config.command_timeout_seconds
                 except Exception:
                     logger.exception("Sürekli dinleme döngüsünde beklenmeyen hata")
+                    if command_buffer is not None:
+                        # Same reason as the unmute path: a capture that
+                        # disappears without a word leaves the UI stuck on
+                        # "Dinliyor".
+                        asyncio.ensure_future(on_command(""))
                     command_buffer = None
                     await asyncio.sleep(1.0)
         finally:

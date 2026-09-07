@@ -9,6 +9,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Safe direction: neo.voice never imports neo.config, so no cycle.
+from ..voice.wake_word import WAKE_PHRASE_THRESHOLD
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -135,12 +138,15 @@ class Settings:
     # How closely a confirmation transcript must match wake_phrase to
     # accept it, 0..1. Lower = fewer "I said it, why didn't it wake up"
     # repeats but more accidental wakes on unrelated speech; higher is the
-    # reverse. 0.78 is tuned from this project's own live logs (see
-    # neo/voice/wake_word.py's WAKE_PHRASE_THRESHOLD) -- every wake-word
-    # engine exposes some form of this as a user-tunable "sensitivity"
-    # rather than one fixed value, since the right tradeoff genuinely
-    # depends on the room and microphone.
-    wake_sensitivity: float = 0.78
+    # reverse. Every wake-word engine exposes some form of this as a
+    # user-tunable "sensitivity" rather than one fixed value, since the
+    # right tradeoff genuinely depends on the room and microphone.
+    #
+    # Taken from WAKE_PHRASE_THRESHOLD rather than written out again: this
+    # is the value actually passed to the listener, so when the two were
+    # separate numbers, tuning the constant in wake_word.py changed nothing
+    # at runtime and the user kept having to repeat the wake phrase.
+    wake_sensitivity: float = WAKE_PHRASE_THRESHOLD
     # Opt-in: this opens a network port (LAN-reachable, token-protected --
     # see neo/web/server.py), which is not something a fresh install should
     # do without the user asking for it.
@@ -182,7 +188,9 @@ def load_settings() -> Settings:
         update_manifest_url=os.getenv("NEO_UPDATE_MANIFEST_URL") or None,
         wake_phrase=os.getenv("NEO_WAKE_PHRASE", "Neo uyan"),
         wake_confirm_model=os.getenv("NEO_WAKE_CONFIRM_MODEL", "base"),
-        wake_sensitivity=float(os.getenv("NEO_WAKE_SENSITIVITY", "0.78")),
+        wake_sensitivity=float(
+            os.getenv("NEO_WAKE_SENSITIVITY", str(WAKE_PHRASE_THRESHOLD))
+        ),
         enable_web_panel=os.getenv("NEO_ENABLE_WEB_PANEL", "").strip().lower() in ("1", "true", "yes"),
         web_panel_port=int(os.getenv("NEO_WEB_PANEL_PORT", "8765")),
     )

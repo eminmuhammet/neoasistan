@@ -320,7 +320,9 @@ class MainWindow(QMainWindow):
             "Windows açıldığında NEO'yu otomatik başlatır (sadece bu kullanıcı için)"
         )
         self._autostart_toggle.clicked.connect(self._on_autostart_toggle_clicked)
-        ctrl.addWidget(self._autostart_toggle, stretch=2)
+        # No stretch: a set-once preference should not be the widest, loudest
+        # thing on the bar. The voice controls get the room instead.
+        ctrl.addWidget(self._autostart_toggle)
 
         self._update_button = QPushButton()
         self._update_button.setObjectName("UpdateButton")
@@ -621,7 +623,7 @@ class MainWindow(QMainWindow):
         enabled = autostart.is_enabled()
         self._autostart_toggle.setChecked(enabled)
         self._autostart_toggle.setText(
-            f"Windows açılışında başlat: {'Açık' if enabled else 'Kapalı'}"
+            f"⚙ Açılışta başlat: {'Açık' if enabled else 'Kapalı'}"
         )
 
     def _on_autostart_toggle_clicked(self) -> None:

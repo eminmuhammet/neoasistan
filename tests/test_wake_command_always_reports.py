@@ -117,3 +117,49 @@ def test_reports_when_the_recognizer_is_broken(monkeypatch):
 def test_a_real_command_is_still_passed_through(monkeypatch):
     calls = _run_capture(monkeypatch, _STT("saat kaç"))
     assert calls == ["saat kaç"]
+
+
+def test_the_activation_chime_does_not_swallow_the_command(monkeypatch):
+    """NEO mutes its own microphone while the "Dinliyorum" chime plays,
+    which happens immediately after the wake word fires -- so the mute lands
+    squarely inside the capture the wake word just opened.
+
+    Unmuting used to clear that capture, and since nothing reported the
+    capture had ended, the interface sat on "Dinliyor" indefinitely while
+    the listener had already gone back to waiting for the wake word. The
+    user had done nothing wrong and got no way to tell.
+    """
+    stt = _STT("saat kaç")
+    listener = WakeWordListener(_Spotter(), stt)
+    monkeypatch.setattr(listener, "_open_stream", lambda: None)
+    monkeypatch.setattr(listener, "_confirm_wake_phrase", lambda w: _true())
+    monkeypatch.setattr(ww, "has_enough_speech", lambda *a, **k: True)
+    monkeypatch.setattr(ww, "speech_seconds", lambda *a, **k: 1.0)
+
+    # Wake, two chunks swallowed by the chime, then the user speaks.
+    script = [LOUD, LOUD, LOUD, LOUD] + [QUIET] * 8
+    muted = iter([False, True, True] + [False] * 20)
+    calls: list[str] = []
+
+    def collect(n):
+        if script:
+            return script.pop(0)
+        listener._running = False
+        return np.zeros(0, dtype=np.float32)
+
+    monkeypatch.setattr(listener, "_collect_chunk", collect)
+
+    async def on_wake():
+        pass
+
+    async def on_command(text):
+        calls.append(text)
+        listener._running = False
+
+    async def drive():
+        await listener.run(on_wake, on_command, is_muted=lambda: next(muted, False))
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+    asyncio.run(drive())
+    assert calls == ["saat kaç"], "susturma sonrasi komut yakalamasi kaybolmamali"
