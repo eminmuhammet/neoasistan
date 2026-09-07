@@ -32,11 +32,14 @@ SAMPLE_RATE = 16000
 # 'Ne oluyor?' (0.59) and 'Mel oya' (0.53). An earlier 0.85 -- derived from
 # tidy strings -- would have rejected every real attempt in that log.
 #
-# No threshold separates these cleanly, because "Neo uyan" collides with
-# very common Turkish ("ne o ya", "ne oluyor"). 0.78 accepts the real
-# attempts and rejects the noise, and the remaining ambiguity is the phrase
-# itself: a more distinctive one (NEO_WAKE_PHRASE) is the real fix.
-WAKE_PHRASE_THRESHOLD = 0.72
+# Since `_best_trailing_suffix_match` started crediting transcripts that
+# only carry the tail of the phrase, the two groups do separate cleanly.
+# Scored over every transcript in logs/neo.log: nine genuine attempts
+# ('uyan.', 'Ne yok, uyan.', 'Ne o ya?', ...) score 0.80-1.00, while
+# eighteen noise/ordinary-speech transcripts ('Ne oluyor?', 'Teşekkürler.',
+# 'Zeynep.', ...) top out at 0.59. 0.70 sits in that 0.21-wide gap with
+# headroom on both sides.
+WAKE_PHRASE_THRESHOLD = 0.70
 
 # Confirmation runs the recognizer, which costs about a second of CPU. The
 # log shows three confirmations inside two seconds while the acoustic
@@ -319,10 +322,16 @@ class WakeWordListener:
                                 text = await self._stt.transcribe(finished)
                             except STTUnavailableError:
                                 logger.exception("Command transcription failed")
+                                asyncio.ensure_future(on_command(""))
                                 continue
                             if text:
                                 logger.info("Komut transkripti: %r", text)
-                                asyncio.ensure_future(on_command(text))
+                            else:
+                                logger.info("Komut atlandı: transkript boş")
+                            # Always reported, empty included: every path out
+                            # of a command capture has to tell the UI, or it
+                            # sits on "Dinliyor" until something else happens.
+                            asyncio.ensure_future(on_command(text or ""))
                         continue
 
                     rolling = np.concatenate([rolling, new_audio])[-window_samples:]

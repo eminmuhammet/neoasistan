@@ -200,14 +200,19 @@ kullanımda Hugging Face önbelleğine indirilir.
 
 ## Arayüz
 
-Koyu temalı, "hareketli" bir panel:
-- Durumu gösteren, nabız gibi atan bir ışık halkası (`StatusOrb`) — renk ve
-  atış hızı duruma göre değişir (bekliyor/dinliyor/düşünüyor/konuşuyor/hata).
-- Canlı CPU/RAM/GPU çubukları (`StatsPanel`), 2.5 saniyede bir gerçek
-  verilerle güncellenir — Claude'a gitmez, GPU yoksa "yok" yazar, asla sayı
-  uydurmaz.
+Koyu, yeşil ağırlıklı temalı, tam ekran açılan tek odaklı bir panel:
+- Ortada, hacimli parçacık küresi (`NeuroVisual`): binlerce parçacıktan oluşan
+  dönen bir kabuk. Silüetinde parlayan rim ışığı küreye derinlik verir; rengi,
+  dönüş hızı ve nefes alışı duruma göre değişir
+  (bekliyor/dinliyor/düşünüyor/konuşuyor/hata). Konuşurken ses seviyesiyle
+  şişip parlar. Pencere gizlenince (tepsiye küçültme) animasyon durur.
+  Tamamen numpy + QPainter ile çizilir, OpenGL gerekmez.
+- Altta tam genişlikte kontrol çubuğu: 🎙 push-to-talk, ⏹ anında durdur,
+  🎓 Neo'yu öğret, sürekli dinleme anahtarı ve canlı CPU/RAM/GPU çubukları
+  (`StatsPanel`, 2.5 saniyede bir gerçek verilerle günceller — Claude'a
+  gitmez, GPU yoksa "yok" yazar, asla sayı uydurmaz).
+- 💬 butonu sohbet akışını ve giriş satırını sağdan açar (varsayılan gizli).
 - ℹ butonuyla NEO hakkında kısa bilgi.
-- 🎙 push-to-talk, ⏹ anında durdur, 🎓 Neo'yu öğret, sürekli dinleme anahtarı.
 
 ## Mimari
 
@@ -219,7 +224,7 @@ neo/
 ├── tools/      Claude tool-use ile çağrılabilen araçlar (registry tabanlı)
 ├── voice/      STT/TTS/wake-word/keyword_spotter (Phase 2)
 ├── memory/     SQLite tabanlı takvim/not deposu (Phase 5, kısmi)
-└── ui/         PySide6 arayüzü (main_window, status_orb, stats_panel, theme)
+└── ui/         PySide6 arayüzü (main_window, neuro_visual, stats_panel, theme)
 ```
 
 Araç çağırma akışı klasik bir intent-router yerine Claude'un native

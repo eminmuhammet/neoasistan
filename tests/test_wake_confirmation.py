@@ -122,3 +122,25 @@ def test_confirm_threshold_defaults_to_the_module_constant(tmp_path):
 
     listener = _listener(tmp_path, FakeSTT("Neo uyan"))
     assert listener._confirm_threshold == ww.WAKE_PHRASE_THRESHOLD
+
+
+def test_the_default_threshold_separates_real_attempts_from_noise(tmp_path):
+    """Scored against every wake transcript in logs/neo.log rather than
+    tidy text, because that gap is what the constant is chosen from.
+
+    'uyan.' is the case that drove the current value: a genuine "Neo uyan"
+    whose quieter first word Whisper dropped. It scored 0.67 whole-string
+    and was rejected, forcing the user to repeat something already said
+    correctly.
+    """
+    real = ["uyan.", "Ne yok, uyan.", "Ne o ya?", "Neo uyan.", "Ne o uyan"]
+    noise = ["Ne oluyor?", "Ne oldu?", "Teşekkürler.", "Zeynep.",
+             "Yemek yapacağım.", "Söyledik mi?", "uyuyor musun"]
+
+    for transcript in real:
+        listener = _listener(tmp_path, FakeSTT(transcript))
+        assert asyncio.run(listener._confirm_wake_phrase(AUDIO)) is True, transcript
+
+    for transcript in noise:
+        listener = _listener(tmp_path, FakeSTT(transcript))
+        assert asyncio.run(listener._confirm_wake_phrase(AUDIO)) is False, transcript

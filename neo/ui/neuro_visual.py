@@ -41,12 +41,15 @@ _STATE_BREATHE: dict[AgentState, float] = {
     AgentState.SPEAKING:   0.0035,
     AgentState.ERROR:      0.0010,
 }
+# A frame costs ~33 ms to render, so ticking faster than that only spins the
+# timer against a render that is already busy. 30 fps is the ceiling; idle
+# deliberately sits well under it to keep the machine quiet.
 _STATE_TICK_MS: dict[AgentState, int] = {
-    AgentState.IDLE:       50,   # ~20 fps idle — saves GPU/CPU
-    AgentState.LISTENING:  33,
-    AgentState.PROCESSING: 25,
-    AgentState.SPEAKING:   25,
-    AgentState.ERROR:      50,
+    AgentState.IDLE:       66,   # ~15 fps — slow breathing needs no more
+    AgentState.LISTENING:  40,
+    AgentState.PROCESSING: 33,
+    AgentState.SPEAKING:   33,
+    AgentState.ERROR:      66,
 }
 
 # Camera/projection constants
@@ -90,9 +93,45 @@ def _hsv_to_rgb(h: float, s: float, v: np.ndarray) -> np.ndarray:
     return np.stack([r0 + m, g0 + m, b0 + m], axis=1)
 
 
+def _splat(flat: np.ndarray, S: int, fx: np.ndarray, fy: np.ndarray,
+           weight: np.ndarray) -> None:
+    """Add particles to a flat (S*S,) intensity buffer with bilinear
+    sub-pixel weights.
+
+    Rounding each particle to its nearest pixel is what made the sphere look
+    pixelated: every dot became a hard-edged square that jittered by a whole
+    pixel as the sphere turned. Spreading the energy over the four
+    surrounding pixels gives sub-pixel positions, so dots are round and
+    motion is smooth.
+    """
+    x0 = np.floor(fx).astype(np.int32)
+    y0 = np.floor(fy).astype(np.int32)
+    m = (x0 >= 0) & (x0 < S - 1) & (y0 >= 0) & (y0 < S - 1)
+    if not m.any():
+        return
+    xi, yi = x0[m], y0[m]
+    wx = (fx[m] - xi).astype(np.float32)
+    wy = (fy[m] - yi).astype(np.float32)
+    a = weight[m].astype(np.float32)
+
+    base = yi.astype(np.int64) * S + xi
+    idx = np.concatenate([base, base + 1, base + S, base + S + 1])
+    w = np.concatenate([
+        a * (1.0 - wx) * (1.0 - wy),
+        a * wx * (1.0 - wy),
+        a * (1.0 - wx) * wy,
+        a * wx * wy,
+    ])
+    flat += np.bincount(idx, weights=w, minlength=S * S)
+
+
 def _box_blur1(img: np.ndarray, r: int) -> np.ndarray:
-    """Single-pass separable box blur. Output shape == input shape."""
-    H, W, C = img.shape
+    """Single-pass separable box blur. Output shape == input shape.
+
+    Works on a 2-D intensity map, which is how it is used: blurring one
+    channel instead of three is three times less cumsum, and the sphere is a
+    single hue anyway, so colour is applied once after the blur.
+    """
     k = 2 * r + 1
 
     def _blur_axis(a: np.ndarray, ax: int) -> np.ndarray:
@@ -124,14 +163,13 @@ def _box_blur1(img: np.ndarray, r: int) -> np.ndarray:
         lo[ax] = slice(0, N)
         return (cs[tuple(hi)] - cs[tuple(lo)]) / k
 
-    return _blur_axis(_blur_axis(img, 1), 0)
+    return _blur_axis(_blur_axis(img, img.ndim - 1), 0)
 
 
 def _gauss_blur(img: np.ndarray, r: int) -> np.ndarray:
-    """3 × box blur ≈ Gaussian — eliminates square grid artefacts."""
-    out = _box_blur1(img, r)
-    out = _box_blur1(out, r)
-    return _box_blur1(out, r)
+    """2 × box blur ≈ triangle filter — round halos without the third pass,
+    which cost more than it added visually."""
+    return _box_blur1(_box_blur1(img, r), r)
 
 
 def _true_gauss_blur(img: np.ndarray, sigma: float) -> np.ndarray:
@@ -163,15 +201,20 @@ class _ParticleData:
 
         # ── Sphere particles ──────────────────────────────────────────────
         dirs  = _rand_unit_sphere(n_sphere, rng)
-        # Gaussian around r=0.88: dense shell + some interior fill
-        radii = np.clip(
-            np.array([rng.gauss(0.88, 0.07) for _ in range(n_sphere)], np.float32),
-            0.55, 1.02,
-        )
-        # Hero particles (8 %) are larger for bright accent nodes
+        # A thin shell reads as a sphere; a thick one projects to a filled
+        # disc with no silhouette. Most particles sit near r=1 so the limb
+        # crowds and draws the outline, with a light interior haze behind it.
+        radii = np.array(
+            [rng.gauss(0.97, 0.03) if rng.random() < 0.88
+             else rng.uniform(0.35, 0.92)
+             for _ in range(n_sphere)],
+            dtype=np.float32,
+        ).clip(0.30, 1.03)
+        # A few bright nodes over a dim field, rather than one uniform
+        # brightness: that contrast is most of what makes it read as depth.
         sizes = np.array(
-            [rng.uniform(4.0, 7.0) if rng.random() < 0.08
-             else rng.uniform(1.2, 3.5)
+            [rng.uniform(7.0, 13.0) if rng.random() < 0.06
+             else rng.uniform(0.5, 2.2)
              for _ in range(n_sphere)],
             dtype=np.float32,
         )
@@ -307,8 +350,13 @@ class NeuroVisual(QWidget):
         super().hideEvent(event)
 
     def _render_thread(self, snap: tuple) -> None:
-        pixmap = self._render_frame(snap)
-        self._frame_ready.emit(pixmap)
+        try:
+            pixmap = self._render_frame(snap)
+            self._frame_ready.emit(pixmap)
+        except RuntimeError:
+            # Widget was destroyed while this frame was still rendering --
+            # normal on shutdown, and the frame has nowhere to go anyway.
+            pass
 
     # ── Rendering ─────────────────────────────────────────────────────────
     def _rotation_matrix(self, yaw: float) -> np.ndarray:
@@ -331,60 +379,60 @@ class NeuroVisual(QWidget):
         breath = 0.97 + 0.06 * breathe + voice_swell
 
         R     = self._rotation_matrix(yaw)
-        pos   = (pd.sphere_dirs * (pd.sphere_radii * breath)[:, None]) @ R.T
+        # Rotate the unit directions, then scale: keeping the unit normal
+        # around is what makes the rim lighting below possible.
+        ndir  = pd.sphere_dirs @ R.T
+        pos   = ndir * (pd.sphere_radii * breath)[:, None]
         psc   = _CAM_DIST / np.maximum(_CAM_DIST - pos[:, 2], 0.01)
         depth = np.clip((pos[:, 2] + 1.0) * 0.5, 0.0, 1.0)
 
         cx = cy = S * 0.5
-        px = (pos[:, 0] * psc * _CLIP_SCALE * cx + cx).astype(np.int32)
-        py = ((-pos[:, 1]) * psc * _CLIP_SCALE * cy + cy).astype(np.int32)
+        fx = pos[:, 0] * psc * _CLIP_SCALE * cx + cx
+        fy = (-pos[:, 1]) * psc * _CLIP_SCALE * cy + cy
 
-        tw    = 0.5 + 0.5 * np.sin(time_ * 2.4 + pd.sphere_phases)
-        alpha = (0.55 + 0.45 * depth) * (0.60 + 0.40 * tw) * (pd.sphere_sizes / 3.0)
+        tw = 0.5 + 0.5 * np.sin(time_ * 2.4 + pd.sphere_phases)
+
+        # Rim (Fresnel) lighting: a particle is brightest where the shell
+        # turns away from the camera, i.e. at the silhouette. That bright
+        # outline is what reads as "hollow sphere" -- shading by depth alone
+        # lit the middle and left the thing looking like a flat disc of
+        # confetti no matter how the particles were distributed.
+        rim   = (1.0 - np.abs(ndir[:, 2])) ** 1.7
+        front = 0.32 + 0.68 * depth       # back hemisphere sits behind
+        shade = (0.05 + 0.95 * rim) * front
+
+        # Shading rides in the intensity, so colour stays uniform and is
+        # applied once after the blur.
+        alpha = shade * (0.60 + 0.40 * tw) * (pd.sphere_sizes / 3.0)
         alpha *= (1.0 + 0.9 * av)
 
-        val      = np.clip(0.65 + 0.35 * depth + 0.15 * av, 0.0, 1.0).astype(np.float32)
-        rgb      = _hsv_to_rgb(hue % 1.0, sat, val)
-        weighted = rgb * alpha[:, None]
-
-        # Single bincount call for all 3 channels at once (combined index
-        # trick) instead of 3 separate calls into a strided [:, :, ch] view
-        # -- the strided writes alone cost ~20ms at 600px, this cuts it to ~3ms.
-        chan = np.arange(3, dtype=np.int64)
-        flat = np.zeros(S * S * 3, dtype=np.float32)
-        mask = (px >= 0) & (px < S) & (py >= 0) & (py < S)
-        if mask.any():
-            idx = (py[mask].astype(np.int64) * S + px[mask]) * 3
-            combined_idx = (idx[:, None] + chan[None, :]).ravel()
-            combined_w   = weighted[mask].ravel()
-            flat += np.bincount(combined_idx, weights=combined_w, minlength=S * S * 3)
+        # One single-channel intensity map for sphere + stars: blurring one
+        # channel instead of three is the difference between ~90 ms and
+        # ~30 ms a frame at 600 px.
+        flat = np.zeros(S * S, dtype=np.float32)
+        _splat(flat, S, fx, fy, alpha)
 
         stw    = 0.35 + 0.65 * np.sin(time_ * 1.5 + pd.star_phases)
-        s_alph = stw * 0.40
-        spx = (pd.star_sx * cx + cx).astype(np.int32)
-        spy = (pd.star_sy * cy + cy).astype(np.int32)
-        s_mask = (spx >= 0) & (spx < S) & (spy >= 0) & (spy < S)
-        if s_mask.any():
-            s_idx = (spy[s_mask].astype(np.int64) * S + spx[s_mask]) * 3
-            s_combined_idx = (s_idx[:, None] + chan[None, :]).ravel()
-            s_rgb = np.tile([0.78, 0.90, 1.00], (s_mask.sum(), 1)).astype(np.float32)
-            s_w   = (s_rgb * s_alph[s_mask, None]).ravel()
-            flat += np.bincount(s_combined_idx, weights=s_w, minlength=S * S * 3)
+        _splat(flat, S, pd.star_sx * cx + cx, pd.star_sy * cy + cy, stw * 0.40)
 
-        buf = flat.reshape(S, S, 3)
+        buf = flat.reshape(S, S)
 
-        # 3-pass box ≈ Gaussian → round halos with no square artefact
-        g1 = _gauss_blur(buf, 2)   # tight crisp core glow
-        g2 = _box_blur1(buf, 18)   # wide soft bloom
+        g1 = _gauss_blur(buf, 2)   # tight core; bilinear splat keeps it round
+        g2 = _box_blur1(buf, 20)   # wide soft atmosphere
 
-        glow_mult = 32.0 + 22.0 * av
-        result = np.clip(_BG + g1 * glow_mult + g2 * (3.5 + 4.0 * av), 0.0, 1.0)
+        glow = g1 * (26.0 + 18.0 * av) + g2 * (5.0 + 5.0 * av)
+        colour = _hsv_to_rgb(hue % 1.0, sat, np.array([1.0], np.float32))[0]
 
-        rgb8 = (result * 255.0).astype(np.uint8)
-        a8   = np.full((S, S, 1), 255, dtype=np.uint8)
-        rgba = np.ascontiguousarray(np.concatenate([rgb8, a8], axis=2))
-        img  = QImage(rgba.data, S, S, S * 4, QImage.Format.Format_RGBA8888)
-        return QPixmap.fromImage(img)
+        # Straight to 0-255 in one broadcast, written into a preallocated
+        # RGBA buffer -- the concatenate + ascontiguousarray round trip this
+        # replaces copied the whole frame twice more.
+        out = _BG[None, None, :] * 255.0 + glow[:, :, None] * (colour * 255.0)[None, None, :]
+        np.clip(out, 0.0, 255.0, out=out)
+        rgba = np.empty((S, S, 4), dtype=np.uint8)
+        rgba[:, :, :3] = out
+        rgba[:, :, 3] = 255
+        img = QImage(rgba.data, S, S, S * 4, QImage.Format.Format_RGBA8888)
+        return QPixmap.fromImage(img.copy())
 
     def paintEvent(self, event) -> None:  # noqa: N802
         W, H = self.width(), self.height()
