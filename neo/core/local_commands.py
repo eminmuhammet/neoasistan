@@ -314,6 +314,35 @@ def match_control_command(text: str) -> str | None:
     return None
 
 
+# Requests to change NEO's authority level (see core/access_mode.py).
+# Unlike listening on/off, switching *into* helper mode can't complete here
+# -- it needs a password typed into a GUI dialog, not spoken (a spoken
+# password would pass through Whisper into the synced conversation
+# transcript). This module only recognizes the intent; core/agent.py is
+# what actually drives the async unlock flow.
+REQUEST_HELPER_MODE = "request_helper_mode"
+REQUEST_ASSISTANT_MODE = "request_assistant_mode"
+
+_MODE_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
+    (
+        re.compile(r"yard[ıi]mc[ıi] moduna ge[çc]|tam yetki(li)? mod"),
+        REQUEST_HELPER_MODE,
+    ),
+    (
+        re.compile(r"asistan moduna (d[öo]n|ge[çc])"),
+        REQUEST_ASSISTANT_MODE,
+    ),
+)
+
+
+def match_mode_command(text: str) -> str | None:
+    lowered = text.lower()
+    for pattern, action in _MODE_PATTERNS:
+        if pattern.search(lowered):
+            return action
+    return None
+
+
 async def try_handle_locally(text: str, registry: ToolRegistry) -> str | None:
     """Returns a formatted reply if `text` matches a known local command or
     small-talk pattern, otherwise None (caller should fall back to the

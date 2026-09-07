@@ -7,7 +7,9 @@ import sys
 from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
 
+from .config.credentials import PasswordStore
 from .config.settings import Settings, load_settings
+from .core.access_mode import AccessModeManager
 from .core.agent import Agent
 from .core.permissions import PermissionManager
 from .logging_setup import setup_logging
@@ -43,6 +45,7 @@ from .tools.time_tools import GetDateTool, GetTimeTool
 from .voice import chime
 from .tools.weather import GetWeatherTool
 from .ui.main_window import MainWindow
+from .ui.mode_unlock_dialog import request_helper_mode_unlock
 from .voice.keyword_spotter import KeywordSpotter
 from .voice.microphone import PushToTalkRecorder
 from .voice.stt import WhisperSTT
@@ -96,7 +99,15 @@ def main() -> int:
     asyncio.set_event_loop(loop)
 
     registry = build_registry(settings)
-    permissions = PermissionManager()
+
+    # Assistant/helper authority mode (see core/access_mode.py): NEO starts
+    # in the restricted assistant mode every launch. The password itself
+    # never touches this module -- PasswordStore only ever returns whether
+    # a candidate matched.
+    mode_manager = AccessModeManager()
+    password_store = PasswordStore(settings.data_dir / "access.json")
+    permissions = PermissionManager(mode_manager=mode_manager)
+
     conversation_store = ConversationStore(settings.conversation_dir)
     logger.info("Konuşma geçmişi klasörü: %s", conversation_store.directory)
 
@@ -111,6 +122,7 @@ def main() -> int:
         permissions=permissions,
         conversation_store=conversation_store,
         preference_store=preference_store,
+        mode_manager=mode_manager,
     )
     recorder = PushToTalkRecorder()
     stt = WhisperSTT(model_size=settings.whisper_model, device=settings.whisper_device)
@@ -142,6 +154,9 @@ def main() -> int:
     # built rather than the other way around.
     permissions.set_confirm(window.confirm_action)
     agent.set_listening_control(window.set_listening)
+    agent.set_mode_unlock_control(
+        lambda: request_helper_mode_unlock(password_store, mode_manager, parent=window)
+    )
     window.show()
 
     # Checked in the background so a slow or unreachable update server can

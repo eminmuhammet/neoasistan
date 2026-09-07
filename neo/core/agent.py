@@ -10,10 +10,14 @@ from ..config.settings import ConfigError, Settings
 from ..tools.base import RiskLevel, ToolRegistry
 from .context import ConversationContext
 from .llm_client import LLMClient, LLMRequestError
+from .access_mode import AccessMode, AccessModeManager
 from .local_commands import (
+    REQUEST_ASSISTANT_MODE,
+    REQUEST_HELPER_MODE,
     START_LISTENING,
     STOP_LISTENING,
     match_control_command,
+    match_mode_command,
     try_handle_locally,
 )
 from .permissions import PermissionManager
@@ -176,6 +180,33 @@ def _preference_context(store: PreferenceStore | None) -> str:
     return f"\n\nKullanıcı hakkında bildiklerin:\n{lines}"
 
 
+
+def _mode_context(mode_manager: AccessModeManager | None) -> str:
+    """Tells Claude the current authority level, the same way the date and
+    known preferences are told: appended to every system prompt rather than
+    discovered only after a tool call is unexpectedly refused.
+
+    This is what lets NEO say "bunu asistan modunda yapamam, yardımcı
+    moduna geçmen gerekiyor" *before* attempting something, instead of
+    trying, getting silently refused, and improvising an explanation.
+    """
+    if mode_manager is None:
+        return ""
+    if mode_manager.mode is AccessMode.HELPER:
+        remaining_minutes = int((mode_manager.seconds_until_drop() or 0.0) // 60)
+        return (
+            "\n\nYetki modu: YARDIMCI (tam yetkili). Yaklaşık "
+            f"{remaining_minutes} dakika hareketsizlik sonrası kendiliğinden "
+            "asistan moduna dönecek."
+        )
+    return (
+        "\n\nYetki modu: ASİSTAN (varsayılan, sınırlı). Kapatma, kilitleme, "
+        "fare/klavye kontrolü gibi YÜKSEK riskli işlemler bu modda tamamen "
+        "kapalı ve denemenin bir anlamı yok -- kullanıcı bunu istiyorsa "
+        "önce \"yardımcı moduna geç\" deyip şifresini girmesi gerektiğini "
+        "söyle."
+    )
+
 def _tool_result_content(result: dict) -> str | list[dict]:
     """Turns a tool's result dict into what actually goes into the
     tool_result message.
@@ -213,6 +244,7 @@ class Agent:
         llm_client: LLMClient | None = None,
         conversation_store: ConversationStore | None = None,
         preference_store: PreferenceStore | None = None,
+        mode_manager: AccessModeManager | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
@@ -221,9 +253,69 @@ class Agent:
         self._llm = llm_client
         self._conversation_store = conversation_store
         self._preference_store = preference_store
+        self._mode_manager = mode_manager
+        self._mode_unlock_control = None
         self.research_mode = False
         self._listening_control = None
         self._restore_history()
+
+    def set_mode_unlock_control(self, callback) -> None:
+        """Lets the GUI expose its password dialog to voice/text control,
+        the same way it exposes the confirmation dialog and the wake-word
+        loop. `callback` is an async, no-argument function that opens the
+        dialog and returns True/False -- Agent never sees the password
+        itself or how it's checked, only whether the unlock succeeded."""
+        self._mode_unlock_control = callback
+
+    async def _maybe_control_mode(self, text: str) -> str | None:
+        """Handles "yardımcı moduna geç" / "asistan moduna dön" locally.
+
+        Switching *into* helper mode can't finish here: it needs a real
+        password dialog, which is why this is async and defers to whatever
+        GUI callback set_mode_unlock_control() wired up, rather than
+        deciding anything about credentials itself.
+        """
+        action = match_mode_command(text)
+        if action is None:
+            return None
+
+        if action == REQUEST_ASSISTANT_MODE:
+            if self._mode_manager is not None:
+                self._mode_manager.drop_to_assistant_mode()
+            return "Tamam, asistan moduna döndüm."
+
+        if action == REQUEST_HELPER_MODE:
+            if self._mode_manager is None:
+                return "Yetki modu bu sürümde henüz yapılandırılmadı."
+            if self._mode_unlock_control is None:
+                return (
+                    "Yardımcı moduna geçmek için bir şifre penceresi açmam "
+                    "gerekiyor, ama bu arayüz henüz bağlanmadı."
+                )
+            unlocked = await self._mode_unlock_control()
+            if unlocked:
+                return "Yardımcı moduna geçtim, tam yetkiliyim şimdi."
+            return "Yardımcı moduna geçilmedi."
+
+        return None
+
+    def _denial_message(self, risk: RiskLevel) -> str:
+        """Distinguishes "the user was asked and said no" from "this was
+        never offered to the user at all" -- the second happens for
+        HIGH-risk tools in assistant mode, and reusing the first message
+        for it would make NEO tell the user they declined something they
+        were never asked about."""
+        if (
+            self._mode_manager is not None
+            and risk == RiskLevel.HIGH
+            and self._mode_manager.mode is AccessMode.ASSISTANT
+        ):
+            return (
+                "Bu işlem asistan modunda tamamen kapalı, kullanıcıya "
+                "sorulmadı. Yapılabilmesi için önce yardımcı moduna "
+                "geçilmesi gerekiyor."
+            )
+        return "Kullanıcı bu işlemi onaylamadı."
 
     def set_listening_control(self, callback) -> None:
         """Lets the GUI expose its wake-word loop to voice control, the same
@@ -284,6 +376,14 @@ class Agent:
         return None
 
     async def handle_message(self, text: str) -> str:
+        mode_reply = await self._maybe_control_mode(text)
+        if mode_reply is not None:
+            self._context.add_user(text)
+            self._context.add_assistant(mode_reply)
+            self._record("user", text)
+            self._record("assistant", mode_reply)
+            return mode_reply
+
         for handler in (self._maybe_control_listening, self._maybe_toggle_research_mode):
             reply = handler(text)
             if reply is not None:
@@ -308,8 +408,11 @@ class Agent:
 
         self._context.add_user(text)
         self._record("user", text)
-        system_prompt = SYSTEM_PROMPT + _current_date_context() + _preference_context(
-            self._preference_store
+        system_prompt = (
+            SYSTEM_PROMPT
+            + _current_date_context()
+            + _preference_context(self._preference_store)
+            + _mode_context(self._mode_manager)
         )
         if self.research_mode:
             system_prompt += RESEARCH_MODE_PROMPT
@@ -342,7 +445,7 @@ class Agent:
                 allowed = await self._permissions.check(block.name, risk, str(block.input))
 
                 if not allowed:
-                    result = {"success": False, "error": "Kullanıcı bu işlemi onaylamadı."}
+                    result = {"success": False, "error": self._denial_message(risk)}
                 else:
                     tool_result = await self._registry.execute(block.name, block.input)
                     result = tool_result.to_dict()
