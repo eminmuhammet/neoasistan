@@ -105,15 +105,15 @@ QLabel#ResearchLabel {
     letter-spacing: 2px;
 }
 
-QWidget#StatsPanel, QWidget#ControlPanel, QWidget#LeftPanel {
+QWidget#StatsPanel {
     background-color: #0a120d;
     border: 1px solid #182920;
     border-radius: 12px;
 }
 
-QWidget#LeftPanel {
-    border: none;
+QWidget#ControlPanel, QWidget#LeftPanel {
     background-color: transparent;
+    border: none;
 }
 
 QWidget#StatsFooter {

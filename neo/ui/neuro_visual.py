@@ -51,8 +51,8 @@ _STATE_TICK_MS: dict[AgentState, int] = {
 _CAM_DIST    = 3.2   # perspective camera distance (sphere radius = 1)
 _CLIP_SCALE  = 0.80  # sphere fills 80 % of widget height in clip space
 
-_N_SPHERE    = 3000  # main particle cloud
-_N_STARS     = 200   # background star field (fixed, no rotation)
+_N_SPHERE    = 5000  # main particle cloud
+_N_STARS     = 300   # background star field (fixed, no rotation)
 
 # Background colour (matches theme)
 _BG = np.array([0.024, 0.039, 0.031], dtype=np.float32)
@@ -181,7 +181,7 @@ class NeuroVisual(QWidget):
     + additive scatter) and QPainter image blit.  No OpenGL required."""
 
     _COMPACT_SIZE = 280
-    _FOCUS_SIZE   = 460
+    _FOCUS_SIZE   = 560
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -325,8 +325,8 @@ class NeuroVisual(QWidget):
         r_bloom = max(14, int(W_w * 0.07))         # ~32px wide bloom
         g2 = _gauss_blur(buf, r_bloom)
 
-        glow_mult = 18.0 + 14.0 * av
-        result = np.clip(_BG + g1 * glow_mult + g2 * (1.8 + 2.0 * av), 0.0, 1.0)
+        glow_mult = 22.0 + 16.0 * av
+        result = np.clip(_BG + g1 * glow_mult + g2 * (2.2 + 2.5 * av), 0.0, 1.0)
 
         # ── Convert to QImage ─────────────────────────────────────────────
         rgb8  = (result * 255.0).astype(np.uint8)

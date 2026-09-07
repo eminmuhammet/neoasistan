@@ -155,18 +155,8 @@ class MainWindow(QMainWindow):
         # Kullanıcı isterse anahtarla açabilir.
 
     def _apply_window_size(self) -> None:
-        """Big and roomy -- "windowed fullscreen", not a cramped popup --
-        but sized off the actual screen instead of a fixed constant so it
-        still fits on a small laptop display."""
-        screen = QApplication.primaryScreen()
-        geo = screen.availableGeometry() if screen is not None else None
-        if geo is not None:
-            width = max(1080, min(1440, int(geo.width() * 0.8)))
-            height = max(760, min(980, int(geo.height() * 0.82)))
-        else:
-            width, height = 1200, 820
         self.setMinimumSize(1000, 680)
-        self.resize(width, height)
+        self.showMaximized()
 
     def _build_ui(self) -> None:
         outer = QWidget()
@@ -255,7 +245,11 @@ class MainWindow(QMainWindow):
 
         content_layout.addWidget(sphere_col, stretch=0)
 
-        # Right: chat panel (hidden by default)
+        # Right filler — mirrors left filler so sphere stays centred when chat hidden
+        self._right_filler = QWidget()
+        content_layout.addWidget(self._right_filler, stretch=1)
+
+        # Right: chat panel (hidden by default, replaces right filler space)
         self._right_panel = right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(12, 0, 20, 0)
@@ -370,8 +364,9 @@ class MainWindow(QMainWindow):
         """Show/hide the conversation column; sphere stays centred when hidden."""
         show_chat = self._chat_toggle_button.isChecked()
         self._right_panel.setVisible(show_chat)
-        # Left filler balances sphere when chat is hidden; collapses when chat shown
-        self._root_layout.setStretchFactor(self._left_filler, 0 if show_chat else 1)
+        self._right_filler.setVisible(not show_chat)
+        self._root_layout.setStretchFactor(self._left_filler, 1)
+        self._root_layout.setStretchFactor(self._right_filler, 1 if not show_chat else 0)
         self._root_layout.setStretchFactor(self._right_panel, 1 if show_chat else 0)
 
     def _on_info_clicked(self) -> None:
