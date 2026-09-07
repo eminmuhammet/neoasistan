@@ -11,12 +11,15 @@ from .config.credentials import PasswordStore
 from .config.settings import Settings, load_settings
 from .core.access_mode import AccessModeManager
 from .core.agent import Agent
+from .core.disk_watch import DiskSpaceWatcher
 from .core.permissions import PermissionManager
 from .core.planner import TaskPlanner
+from .core.scheduler import Scheduler
 from .logging_setup import setup_logging
 from .memory.calendar_store import CalendarStore
 from .memory.conversation_store import ConversationStore
 from .memory.preference_store import PreferenceStore
+from .memory.scheduled_job_store import ScheduledJobStore
 from .memory.task_store import TaskStore
 from .tools.applications import OpenApplicationTool, OpenWebsiteTool
 from .tools.base import ToolRegistry
@@ -35,6 +38,11 @@ from .tools.preferences import (
 )
 from .tools.planning import RunTaskTool
 from .tools.power import LockComputerTool, RestartComputerTool, ShutdownComputerTool
+from .tools.scheduling import (
+    CancelScheduledTaskTool,
+    ListScheduledTasksTool,
+    ScheduleTaskTool,
+)
 from .tools.screen import CaptureScreenTool
 from .tools.system_info import (
     GetCpuUsageTool,
@@ -137,6 +145,44 @@ def main() -> int:
     task_store = TaskStore(settings.data_dir / "tasks.db")
     planner = TaskPlanner(agent, task_store)
     registry.register(RunTaskTool(planner))
+
+    # Proaktif NEO (see core/scheduler.py, core/disk_watch.py): a fired job
+    # or a critical disk-space alert is written to conversation history so
+    # it isn't lost, but there is deliberately no live on-screen popup or
+    # spoken announcement here yet -- that surface lives in main_window.py,
+    # which is under active redesign in a parallel work stream. Wiring
+    # through the stable, public conversation_store keeps this feature
+    # fully working without touching that file.
+    scheduled_job_store = ScheduledJobStore(settings.data_dir / "scheduled_jobs.db")
+    registry.register(ScheduleTaskTool(scheduled_job_store))
+    registry.register(ListScheduledTasksTool(scheduled_job_store))
+    registry.register(CancelScheduledTaskTool(scheduled_job_store))
+
+    if scheduled_job_store.find_by_name("Sabah brifingi") is None:
+        from datetime import datetime
+
+        from .core.scheduler import compute_next_run
+
+        first_run = compute_next_run("daily", "08:00", datetime.now())
+        scheduled_job_store.create_job(
+            "Sabah brifingi",
+            "Bugünkü takvim notlarını ve hava durumunu efendime kısaca özetle.",
+            "daily",
+            "08:00",
+            first_run.isoformat(),
+        )
+
+    scheduler = Scheduler(
+        agent,
+        scheduled_job_store,
+        on_fire=lambda job, text: conversation_store.add_message("assistant", text),
+    )
+    scheduler.start()
+
+    disk_watcher = DiskSpaceWatcher(
+        on_alert=lambda text: conversation_store.add_message("assistant", text),
+    )
+    disk_watcher.start()
 
     recorder = PushToTalkRecorder()
     stt = WhisperSTT(model_size=settings.whisper_model, device=settings.whisper_device)
