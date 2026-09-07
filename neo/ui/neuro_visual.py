@@ -106,6 +106,27 @@ def _gauss_blur(img: np.ndarray, r: int) -> np.ndarray:
     return _box_blur1(out, r)
 
 
+def _true_gauss_blur(img: np.ndarray, sigma: float) -> np.ndarray:
+    """True separable Gaussian — produces perfectly round halos."""
+    r = max(1, int(3.0 * sigma))
+    x = np.arange(-r, r + 1, dtype=np.float32)
+    k = np.exp(-x ** 2 / (2.0 * sigma ** 2))
+    k /= k.sum()
+
+    def _conv(arr: np.ndarray, axis: int) -> np.ndarray:
+        pad = [(0, 0)] * 3
+        pad[axis] = (r, r)
+        p = np.pad(arr, pad, mode='edge')
+        out = np.zeros_like(arr)
+        for i, ki in enumerate(k):
+            sl: list = [slice(None)] * 3
+            sl[axis] = slice(i, i + arr.shape[axis])
+            out += ki * p[tuple(sl)]
+        return out
+
+    return _conv(_conv(img, 1), 0)   # horizontal then vertical
+
+
 class _ParticleData:
     """Pre-computed, immutable particle geometry (regenerated on resize)."""
 
@@ -280,15 +301,13 @@ class NeuroVisual(QWidget):
                     s_idx, weights=s_w[:, ch], minlength=H * W
                 )
 
-        # ── Two-scale Gaussian glow: tight per-particle halo + wide bloom ──
+        # ── Two-scale glow: true-Gaussian halo + wide bloom ─────────────
         W_w = self.width()
-        r1 = 2                             # very tight halo → glowing dot look
-        r2 = max(22, int(W_w * 0.10))     # ~46px wide volumetric bloom
-        g1 = _gauss_blur(buf, r1)
-        g2 = _gauss_blur(buf, r2)
+        g1 = _true_gauss_blur(buf, 1.5)           # sigma=1.5px → tight round dots
+        r_bloom = max(14, int(W_w * 0.07))         # ~32px wide bloom
+        g2 = _gauss_blur(buf, r_bloom)
 
-        # No raw buf — gauss halo handles sparks, bloom gives depth
-        result = np.clip(_BG + g1 * 22.0 + g2 * 3.0, 0.0, 1.0)
+        result = np.clip(_BG + g1 * 18.0 + g2 * 1.8, 0.0, 1.0)
 
         # ── Convert to QImage ─────────────────────────────────────────────
         rgb8  = (result * 255.0).astype(np.uint8)
