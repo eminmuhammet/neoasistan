@@ -4,8 +4,8 @@ import math
 import random
 
 import numpy as np
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from ..core.state import AgentState
@@ -54,8 +54,12 @@ _CLIP_SCALE  = 0.80  # sphere fills 80 % of widget height in clip space
 _N_SPHERE    = 4000  # main particle cloud
 _N_STARS     = 250   # background star field (fixed, no rotation)
 
-# Background colour (matches theme)
-_BG = np.array([0.024, 0.039, 0.031], dtype=np.float32)
+# Internal render resolution — blur cost is O(N²), so keep this fixed
+# regardless of widget/screen size; Qt scales up with SmoothTransformation.
+_RENDER_SIZE = 400
+
+# Background colour — pure black for maximum contrast/glow pop
+_BG = np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
 
 def _rand_unit_sphere(n: int, rng: random.Random) -> np.ndarray:
@@ -87,16 +91,38 @@ def _hsv_to_rgb(h: float, s: float, v: np.ndarray) -> np.ndarray:
 def _box_blur1(img: np.ndarray, r: int) -> np.ndarray:
     """Single-pass separable box blur. Output shape == input shape."""
     H, W, C = img.shape
-    # Horizontal
-    p = np.pad(img, ((0, 0), (r, r), (0, 0)), mode='edge')
-    z = np.zeros((H, 1, C), dtype=img.dtype)
-    cs = np.cumsum(np.concatenate([z, p], axis=1), axis=1)
-    h = (cs[:, 2*r+1:, :] - cs[:, :W, :]) / (2*r + 1)
-    # Vertical
-    p = np.pad(h, ((r, r), (0, 0), (0, 0)), mode='edge')
-    z = np.zeros((1, W, C), dtype=img.dtype)
-    cs = np.cumsum(np.concatenate([z, p], axis=0), axis=0)
-    return (cs[2*r+1:, :, :] - cs[:H, :, :]) / (2*r + 1)
+    k = 2 * r + 1
+
+    def _blur_axis(a: np.ndarray, ax: int) -> np.ndarray:
+        N = a.shape[ax]
+        # Pre-allocate padded + zero-prepended buffer: size N+2r+1 along ax
+        shape = list(a.shape)
+        shape[ax] = N + 2 * r + 1
+        buf = np.empty(shape, dtype=np.float32)
+        sl0 = [slice(None)] * a.ndim
+        sl0[ax] = slice(0, 1)
+        buf[tuple(sl0)] = 0.0           # prepended zero
+        sl1 = [slice(None)] * a.ndim
+        sl1[ax] = slice(1, 1 + r)
+        src1 = [slice(None)] * a.ndim
+        src1[ax] = slice(0, 1)
+        buf[tuple(sl1)] = a[tuple(src1)]  # left/top edge pad
+        sl2 = [slice(None)] * a.ndim
+        sl2[ax] = slice(1 + r, 1 + r + N)
+        buf[tuple(sl2)] = a               # data
+        sl3 = [slice(None)] * a.ndim
+        sl3[ax] = slice(1 + r + N, None)
+        src3 = [slice(None)] * a.ndim
+        src3[ax] = slice(-1, None)
+        buf[tuple(sl3)] = a[tuple(src3)]  # right/bottom edge pad
+        cs = buf.cumsum(axis=ax)
+        hi = [slice(None)] * a.ndim
+        hi[ax] = slice(k, k + N)
+        lo = [slice(None)] * a.ndim
+        lo[ax] = slice(0, N)
+        return (cs[tuple(hi)] - cs[tuple(lo)]) / k
+
+    return _blur_axis(_blur_axis(img, 1), 0)
 
 
 def _gauss_blur(img: np.ndarray, r: int) -> np.ndarray:
@@ -140,10 +166,10 @@ class _ParticleData:
             np.array([rng.gauss(0.88, 0.07) for _ in range(n_sphere)], np.float32),
             0.55, 1.02,
         )
-        # Hero particles (5 %) are 3-5× larger for bright nodes
+        # Hero particles (8 %) are larger for bright accent nodes
         sizes = np.array(
-            [rng.uniform(3.0, 5.0) if rng.random() < 0.05
-             else rng.uniform(0.8, 2.5)
+            [rng.uniform(4.0, 7.0) if rng.random() < 0.08
+             else rng.uniform(1.2, 3.5)
              for _ in range(n_sphere)],
             dtype=np.float32,
         )
@@ -267,77 +293,78 @@ class NeuroVisual(QWidget):
             [-sy, cy*sp,  cy*cp],
         ], dtype=np.float32)
 
-    def _render_frame(self, W: int, H: int) -> QImage:
-        pd    = self._pdata
-        av    = self._audio_level_smooth            # 0-1 voice reactivity
-        # breath: base oscillation + voice-reactive swell (SPEAKING only)
+    def _render_frame(self) -> QPixmap:
+        """Render at fixed _RENDER_SIZE×_RENDER_SIZE; caller scales to widget."""
+        S  = _RENDER_SIZE
+        pd = self._pdata
+        av = self._audio_level_smooth
+
         voice_swell = av * 0.18 if self._state == AgentState.SPEAKING else 0.0
         breath = 0.97 + 0.06 * self._breathe + voice_swell
 
         # ── Project sphere particles ──────────────────────────────────────
-        R    = self._rotation_matrix()
-        pos  = (pd.sphere_dirs * (pd.sphere_radii * breath)[:, None]) @ R.T  # (N, 3)
-        psc  = _CAM_DIST / np.maximum(_CAM_DIST - pos[:, 2], 0.01)           # (N,)
-        depth = np.clip((pos[:, 2] + 1.0) * 0.5, 0.0, 1.0)                   # (N,)
+        R     = self._rotation_matrix()
+        pos   = (pd.sphere_dirs * (pd.sphere_radii * breath)[:, None]) @ R.T
+        psc   = _CAM_DIST / np.maximum(_CAM_DIST - pos[:, 2], 0.01)
+        depth = np.clip((pos[:, 2] + 1.0) * 0.5, 0.0, 1.0)
 
-        cx, cy = W * 0.5, H * 0.5
+        cx = cy = S * 0.5
         px = (pos[:, 0] * psc * _CLIP_SCALE * cx + cx).astype(np.int32)
         py = ((-pos[:, 1]) * psc * _CLIP_SCALE * cy + cy).astype(np.int32)
 
-        # Per-particle alpha: depth + twinkle + size + voice boost
         tw    = 0.5 + 0.5 * np.sin(self._time * 2.4 + pd.sphere_phases)
-        alpha = (0.45 + 0.55 * depth) * (0.55 + 0.45 * tw) * (pd.sphere_sizes / 3.5)
-        alpha *= (1.0 + 0.7 * av)   # voice level brightens all particles
+        alpha = (0.55 + 0.45 * depth) * (0.60 + 0.40 * tw) * (pd.sphere_sizes / 3.0)
+        alpha *= (1.0 + 0.9 * av)
 
-        # Colours (HSV depth-modulated value)
-        val  = np.clip(0.65 + 0.35 * depth + 0.15 * av, 0.0, 1.0).astype(np.float32)
-        rgb  = _hsv_to_rgb(self._hue % 1.0, self._sat, val)  # (N, 3)
-        weighted = rgb * alpha[:, None]                        # (N, 3)
+        val     = np.clip(0.65 + 0.35 * depth + 0.15 * av, 0.0, 1.0).astype(np.float32)
+        rgb     = _hsv_to_rgb(self._hue % 1.0, self._sat, val)
+        weighted = rgb * alpha[:, None]
 
-        # Scatter into float buffer via bincount (fast vectorised scatter)
-        buf = np.zeros((H, W, 3), dtype=np.float32)
-        mask = (px >= 0) & (px < W) & (py >= 0) & (py < H)
+        buf  = np.zeros((S, S, 3), dtype=np.float32)
+        mask = (px >= 0) & (px < S) & (py >= 0) & (py < S)
         if mask.any():
-            idx = py[mask] * W + px[mask]
+            idx = py[mask] * S + px[mask]
             for ch in range(3):
-                buf[:, :, ch].flat += np.bincount(
-                    idx, weights=weighted[mask, ch], minlength=H * W
-                )
+                buf[:, :, ch].flat += np.bincount(idx, weights=weighted[mask, ch], minlength=S * S)
 
-        # ── Background stars (no rotation, tiny) ─────────────────────────
+        # ── Background stars ──────────────────────────────────────────────
         stw    = 0.35 + 0.65 * np.sin(self._time * 1.5 + pd.star_phases)
         s_alph = stw * 0.40
         spx = (pd.star_sx * cx + cx).astype(np.int32)
         spy = (pd.star_sy * cy + cy).astype(np.int32)
-        s_mask = (spx >= 0) & (spx < W) & (spy >= 0) & (spy < H)
+        s_mask = (spx >= 0) & (spx < S) & (spy >= 0) & (spy < S)
         if s_mask.any():
-            s_idx = spy[s_mask] * W + spx[s_mask]
-            star_rgb = np.tile([0.78, 0.90, 1.00], (s_mask.sum(), 1))
-            s_w = star_rgb * s_alph[s_mask, None]
+            s_idx  = spy[s_mask] * S + spx[s_mask]
+            s_rgb  = np.tile([0.78, 0.90, 1.00], (s_mask.sum(), 1))
+            s_w    = s_rgb * s_alph[s_mask, None]
             for ch in range(3):
-                buf[:, :, ch].flat += np.bincount(
-                    s_idx, weights=s_w[:, ch], minlength=H * W
-                )
+                buf[:, :, ch].flat += np.bincount(s_idx, weights=s_w[:, ch], minlength=S * S)
 
-        # ── Two-scale glow: true-Gaussian halo + wide bloom ─────────────
-        W_w = self.width()
-        g1 = _true_gauss_blur(buf, 1.5)           # sigma=1.5px → tight round dots
-        r_bloom = max(14, int(W_w * 0.07))         # ~32px wide bloom
-        g2 = _gauss_blur(buf, r_bloom)
+        # ── Glow: 2-pass box blur for halo, 1-pass for bloom ────────────────
+        g1_tmp = _box_blur1(buf, 2)
+        g1     = _box_blur1(g1_tmp, 2)         # 2×box → smoother halo
+        g2     = _box_blur1(buf, 24)            # wide bloom (single pass, fast)
 
-        glow_mult = 22.0 + 16.0 * av
-        result = np.clip(_BG + g1 * glow_mult + g2 * (2.2 + 2.5 * av), 0.0, 1.0)
+        glow_mult = 26.0 + 18.0 * av
+        result = np.clip(_BG + g1 * glow_mult + g2 * (2.8 + 3.0 * av), 0.0, 1.0)
 
-        # ── Convert to QImage ─────────────────────────────────────────────
-        rgb8  = (result * 255.0).astype(np.uint8)
-        alpha = np.full((H, W, 1), 255, dtype=np.uint8)
-        rgba  = np.ascontiguousarray(np.concatenate([rgb8, alpha], axis=2))
-        return QImage(rgba.data, W, H, W * 4, QImage.Format.Format_RGBA8888)
+        rgb8 = (result * 255.0).astype(np.uint8)
+        a8   = np.full((S, S, 1), 255, dtype=np.uint8)
+        rgba = np.ascontiguousarray(np.concatenate([rgb8, a8], axis=2))
+        img  = QImage(rgba.data, S, S, S * 4, QImage.Format.Format_RGBA8888)
+        return QPixmap.fromImage(img)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        W = self.width()
-        H = self.height()
-        img = self._render_frame(W, H)
+        W, H   = self.width(), self.height()
+        pixmap = self._render_frame()
+        scaled = pixmap.scaled(
+            W, H,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
         painter = QPainter(self)
-        painter.drawImage(0, 0, img)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        x = (W - scaled.width()) // 2
+        y = (H - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
         painter.end()
