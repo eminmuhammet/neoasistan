@@ -20,6 +20,7 @@ from .logging_setup import setup_logging
 from .memory.audit_store import AuditStore
 from .memory.calendar_store import CalendarStore
 from .memory.conversation_store import ConversationStore
+from .memory.document_index import DocumentIndex
 from .memory.preference_store import PreferenceStore
 from .memory.scheduled_job_store import ScheduledJobStore
 from .memory.task_store import TaskStore
@@ -32,7 +33,7 @@ from .tools.calendar import (
     GetCalendarNotesTool,
     UpdateCalendarNoteTool,
 )
-from .tools.document_search import ReadDocumentTool
+from .tools.document_search import IndexFolderTool, ReadDocumentTool, SearchDocumentsTool
 from .tools.filesystem import FindFileTool, OpenFolderTool
 from .tools.media import GetVolumeTool, MediaControlTool, SetMuteTool, SetVolumeTool
 from .tools.gmail import CreateEmailDraftTool, ReadRecentEmailsTool, SendEmailTool
@@ -119,6 +120,10 @@ def build_registry(settings: Settings) -> ToolRegistry:
     registry.register(FindFileTool())
     registry.register(OpenFolderTool())
     registry.register(ReadDocumentTool())
+
+    document_index = DocumentIndex(settings.data_dir / "document_index.db")
+    registry.register(IndexFolderTool(document_index))
+    registry.register(SearchDocumentsTool(document_index))
 
     registry.register(GetVolumeTool())
     registry.register(SetVolumeTool())
