@@ -25,3 +25,9 @@ httpx>=0.27
 # see README)
 google-auth-oauthlib>=1.2
 google-api-python-client>=2.140
+
+# V2 -- screen vision: capture a screenshot, send it to Claude directly
+# (no OCR step -- Claude reads layout/context far better than plain text
+# extraction would, see NEO_V2_PLAN.md)
+mss>=9.0
+Pillow>=10.0

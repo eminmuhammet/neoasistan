@@ -176,6 +176,34 @@ def _preference_context(store: PreferenceStore | None) -> str:
     return f"\n\nKullanıcı hakkında bildiklerin:\n{lines}"
 
 
+def _tool_result_content(result: dict) -> str | list[dict]:
+    """Turns a tool's result dict into what actually goes into the
+    tool_result message.
+
+    Most tools return plain data, JSON-encoded exactly as before. A tool
+    that captured an image (screen vision) instead gets a real Anthropic
+    image content block alongside a short text caption with the rest of
+    the result -- the Messages API accepts tool_result content as either a
+    plain string or a list of blocks, and an image block inside it works
+    the same way it would in an ordinary user turn. This is why no "queue
+    the image for the next message" plumbing was needed: it goes straight
+    into the same turn's tool_result.
+    """
+    image_base64 = result.get("image_base64")
+    if not image_base64:
+        return json.dumps(result, ensure_ascii=False)
+
+    media_type = result.get("media_type", "image/png")
+    caption = {k: v for k, v in result.items() if k != "image_base64"}
+    return [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": image_base64},
+        },
+        {"type": "text", "text": json.dumps(caption, ensure_ascii=False)},
+    ]
+
+
 class Agent:
     def __init__(
         self,
@@ -319,6 +347,6 @@ class Agent:
                     tool_result = await self._registry.execute(block.name, block.input)
                     result = tool_result.to_dict()
 
-                self._context.add_tool_result(block.id, json.dumps(result, ensure_ascii=False))
+                self._context.add_tool_result(block.id, _tool_result_content(result))
 
         return "Bu istek çok karmaşık hale geldi, tekrar dener misin?"

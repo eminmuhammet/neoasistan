@@ -30,6 +30,7 @@ from .tools.preferences import (
     RememberPreferenceTool,
 )
 from .tools.power import LockComputerTool, RestartComputerTool, ShutdownComputerTool
+from .tools.screen import CaptureScreenTool
 from .tools.system_info import (
     GetCpuUsageTool,
     GetDiskUsageTool,
@@ -81,6 +82,7 @@ def build_registry(settings: Settings) -> ToolRegistry:
     registry.register(LockComputerTool())
     registry.register(ShutdownComputerTool())
     registry.register(RestartComputerTool())
+    registry.register(CaptureScreenTool())
     return registry
 
 
