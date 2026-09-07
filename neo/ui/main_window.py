@@ -80,11 +80,19 @@ PTT_MIN_SPEECH_SECONDS = 0.25
 SHUTDOWN_GRACE_MS = 3000
 
 STATE_LABELS = {
-    AgentState.IDLE: "Hazır",
-    AgentState.LISTENING: "Dinleniyor...",
-    AgentState.PROCESSING: "Düşünüyor...",
-    AgentState.SPEAKING: "Konuşuyor...",
-    AgentState.ERROR: "Hata",
+    AgentState.IDLE:       "●  HAZIR",
+    AgentState.LISTENING:  "◉  DİNLİYOR",
+    AgentState.PROCESSING: "◈  İŞLİYOR",
+    AgentState.SPEAKING:   "◎  KONUŞUYOR",
+    AgentState.ERROR:      "✕  HATA",
+}
+
+_STATE_LABEL_COLOR = {
+    AgentState.IDLE:       "#35e08a",
+    AgentState.LISTENING:  "#4db8ff",
+    AgentState.PROCESSING: "#f2b134",
+    AgentState.SPEAKING:   "#35e08a",
+    AgentState.ERROR:      "#e05050",
 }
 
 
@@ -158,12 +166,20 @@ class MainWindow(QMainWindow):
         self.resize(width, height)
 
     def _build_ui(self) -> None:
-        root = QWidget()
+        # Outer: VBox — content row on top, stats footer at bottom
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # ── Content row ───────────────────────────────────────────────────
+        content = QWidget()
+        root = content
         root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(20, 18, 20, 18)
+        root_layout.setContentsMargins(20, 18, 20, 12)
         root_layout.setSpacing(18)
 
-        # -- left: brand mark, neural activity visual, live stats, controls --
+        # -- left: brand mark, neural activity visual, controls --
         self._left_panel = left_panel = QWidget()
         left_panel.setObjectName("LeftPanel")
         left_panel.setFixedWidth(self._LEFT_PANEL_COMPACT_WIDTH)
@@ -228,16 +244,6 @@ class MainWindow(QMainWindow):
         self._research_label.hide()
         orb_col.addWidget(self._research_label)
         layout.addLayout(orb_col)
-
-        stats_panel = StatsPanel()
-        stats_panel.setObjectName("StatsPanel")
-        stats_layout = QVBoxLayout()
-        stats_layout.setContentsMargins(12, 10, 12, 10)
-        stats_layout.addWidget(stats_panel)
-        stats_container = QWidget()
-        stats_container.setObjectName("StatsPanel")
-        stats_container.setLayout(stats_layout)
-        layout.addWidget(stats_container)
 
         control_panel = QWidget()
         control_panel.setObjectName("ControlPanel")
@@ -323,7 +329,22 @@ class MainWindow(QMainWindow):
         self._root_layout = root_layout
         root_layout.addWidget(right_panel, stretch=1)
 
-        self.setCentralWidget(root)
+        outer_layout.addWidget(content, stretch=1)
+
+        # ── Stats footer — full width ─────────────────────────────────────
+        stats_footer = QWidget()
+        stats_footer.setObjectName("StatsFooter")
+        stats_footer_layout = QHBoxLayout(stats_footer)
+        stats_footer_layout.setContentsMargins(28, 8, 28, 10)
+        stats_footer_layout.setSpacing(0)
+        stats_panel = StatsPanel()
+        stats_panel.setObjectName("StatsPanel")
+        stats_footer_layout.addStretch(1)
+        stats_footer_layout.addWidget(stats_panel)
+        stats_footer_layout.addStretch(1)
+        outer_layout.addWidget(stats_footer)
+
+        self.setCentralWidget(outer)
         self._append("NEO", "Merhaba, dinliyorum.")
         # Starts focused on the neural visual -- the "ana odak" -- with the
         # transcript a click away rather than always sharing the window.
@@ -451,6 +472,10 @@ class MainWindow(QMainWindow):
     def _set_state(self, state: AgentState) -> None:
         self._status_orb.set_state(state)
         self._status_label.setText(STATE_LABELS[state])
+        self._status_label.setStyleSheet(
+            f"color: {_STATE_LABEL_COLOR[state]};"
+            "font-size: 11px; font-weight: 700; letter-spacing: 3px;"
+        )
         if state == AgentState.SPEAKING:
             self._voice_phase = 0.0
             self._voice_timer.start()
