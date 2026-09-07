@@ -13,6 +13,7 @@ from .core.permissions import PermissionManager
 from .logging_setup import setup_logging
 from .memory.calendar_store import CalendarStore
 from .memory.conversation_store import ConversationStore
+from .memory.preference_store import PreferenceStore
 from .tools.applications import OpenApplicationTool, OpenWebsiteTool
 from .tools.base import ToolRegistry
 from .tools.calendar import (
@@ -23,6 +24,11 @@ from .tools.calendar import (
 )
 from .tools.filesystem import FindFileTool, OpenFolderTool
 from .tools.google_calendar import GoogleCalendarSync
+from .tools.preferences import (
+    ForgetPreferenceTool,
+    RecallPreferencesTool,
+    RememberPreferenceTool,
+)
 from .tools.power import LockComputerTool, RestartComputerTool, ShutdownComputerTool
 from .tools.system_info import (
     GetCpuUsageTool,
@@ -91,8 +97,18 @@ def main() -> int:
     permissions = PermissionManager()
     conversation_store = ConversationStore(settings.conversation_dir)
     logger.info("Konuşma geçmişi klasörü: %s", conversation_store.directory)
+
+    preference_store = PreferenceStore(settings.data_dir / "preferences.db")
+    registry.register(RememberPreferenceTool(preference_store))
+    registry.register(RecallPreferencesTool(preference_store))
+    registry.register(ForgetPreferenceTool(preference_store))
+
     agent = Agent(
-        settings, registry, permissions=permissions, conversation_store=conversation_store
+        settings,
+        registry,
+        permissions=permissions,
+        conversation_store=conversation_store,
+        preference_store=preference_store,
     )
     recorder = PushToTalkRecorder()
     stt = WhisperSTT(model_size=settings.whisper_model, device=settings.whisper_device)

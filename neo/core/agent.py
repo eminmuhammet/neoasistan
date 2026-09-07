@@ -18,6 +18,7 @@ from .local_commands import (
 )
 from .permissions import PermissionManager
 from ..memory.conversation_store import ConversationStore
+from ..memory.preference_store import PreferenceStore
 from ..tools.time_tools import TR_DAYS, TR_MONTHS
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,23 @@ kullan.
 get_calendar_notes ile o günün notlarını al, sonra doğru 'id' ile \
 delete_calendar_note veya update_calendar_note kullan. Hangi notun \
 kastedildiği belirsizse silme, önce kullanıcıya hangisi olduğunu sor.
+
+Kalıcı hafıza (kullanıcı hakkında öğrenilenler) hakkında:
+- Kullanıcı kendisi hakkında durumu kalıcı olarak değişmeyen bir şey \
+söylerse (şehri, mesleği, nasıl hitap edilmek istediği, bir tercihi/ \
+alışkanlığı) remember_preference ile kaydet. Anahtar kısa ve tutarlı \
+olsun (ör. 'şehir', 'meslek', 'hitap_şekli'); aynı bilgi için farklı \
+isimler uydurma, var olan anahtarı güncelle.
+- Günlük/geçici/duygusal şeyleri kaydetme (ör. "bugün yorgunum", "biraz \
+canım sıkkın") -- bunlar kalıcı bir gerçek değil, o anın hali.
+- Şifre, TC kimlik no, kart no, banka bilgisi gibi hiçbir kimlik/kimlik \
+doğrulama bilgisini ASLA remember_preference ile kaydetme; bu tür bir \
+şey söylenirse nazikçe hatırlamayacağını belirt.
+- Kullanıcı "benim hakkımda ne biliyorsun" gibi bir şey sorarsa \
+recall_preferences kullan. Bir bilgi artık doğru değilse veya \
+kullanıcı unutulmasını isterse forget_preference kullan.
+- Bildiğin bilgiler her mesajda sana ayrıca veriliyor (aşağıda); \
+bunları doğal bir şekilde kullan, her cümlede tekrar etme.
 """
 
 SPOKEN_SUMMARY_PREFIX = "SESLİ ÖZET:"
@@ -143,6 +161,21 @@ def _current_date_context() -> str:
     return f"\n\nGüncel tarih: {now.strftime('%Y-%m-%d')} ({now.day} {month} {now.year}, {weekday})."
 
 
+def _preference_context(store: PreferenceStore | None) -> str:
+    """Known facts about the user, injected the same way the current date
+    is: appended to the system prompt on every call, rather than relying on
+    Claude to remember to call recall_preferences first. Empty when there's
+    nothing learned yet, so a fresh install's prompt isn't padded with a
+    pointless empty section."""
+    if store is None:
+        return ""
+    prefs = store.all()
+    if not prefs:
+        return ""
+    lines = "\n".join(f"- {p.key}: {p.value}" for p in prefs)
+    return f"\n\nKullanıcı hakkında bildiklerin:\n{lines}"
+
+
 class Agent:
     def __init__(
         self,
@@ -151,6 +184,7 @@ class Agent:
         permissions: PermissionManager | None = None,
         llm_client: LLMClient | None = None,
         conversation_store: ConversationStore | None = None,
+        preference_store: PreferenceStore | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
@@ -158,6 +192,7 @@ class Agent:
         self._context = ConversationContext()
         self._llm = llm_client
         self._conversation_store = conversation_store
+        self._preference_store = preference_store
         self.research_mode = False
         self._listening_control = None
         self._restore_history()
@@ -245,7 +280,9 @@ class Agent:
 
         self._context.add_user(text)
         self._record("user", text)
-        system_prompt = SYSTEM_PROMPT + _current_date_context()
+        system_prompt = SYSTEM_PROMPT + _current_date_context() + _preference_context(
+            self._preference_store
+        )
         if self.research_mode:
             system_prompt += RESEARCH_MODE_PROMPT
         max_tokens = MAX_TOKENS_RESEARCH if self.research_mode else MAX_TOKENS_DEFAULT
