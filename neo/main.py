@@ -17,12 +17,14 @@ from .core.permissions import PermissionManager
 from .core.planner import TaskPlanner
 from .core.scheduler import Scheduler
 from .logging_setup import setup_logging
+from .memory.audit_store import AuditStore
 from .memory.calendar_store import CalendarStore
 from .memory.conversation_store import ConversationStore
 from .memory.preference_store import PreferenceStore
 from .memory.scheduled_job_store import ScheduledJobStore
 from .memory.task_store import TaskStore
 from .tools.applications import OpenApplicationTool, OpenWebsiteTool
+from .tools.audit import GetRecentActivityTool
 from .tools.base import ToolRegistry
 from .tools.calendar import (
     AddCalendarNoteTool,
@@ -165,6 +167,21 @@ def main() -> int:
     registry.register(RecallPreferencesTool(preference_store))
     registry.register(ForgetPreferenceTool(preference_store))
 
+    # Güvenlik merkezi backend (see NEO_V2_PLAN.md item 9): every tool call
+    # the agent makes gets logged here, allowed or denied. No UI panel yet
+    # (security_panel.py's home, main_window.py, is under active redesign
+    # in a parallel work stream) -- get_recent_activity lets NEO answer
+    # "son 24 saatte ne yaptın" directly in chat in the meantime.
+    audit_store = AuditStore(settings.data_dir / "audit.db")
+    registry.register(GetRecentActivityTool(audit_store))
+
+    async def _audit_hook(tool_name, risk, tool_input, success, error) -> None:
+        await asyncio.to_thread(
+            audit_store.log, tool_name, risk.value if risk else "unknown", tool_input, success, error
+        )
+
+    registry.set_audit_hook(_audit_hook)
+
     agent = Agent(
         settings,
         registry,
@@ -172,6 +189,7 @@ def main() -> int:
         conversation_store=conversation_store,
         preference_store=preference_store,
         mode_manager=mode_manager,
+        audit_store=audit_store,
     )
 
     # run_task needs a reference to the already-constructed agent (it drives

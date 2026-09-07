@@ -4,7 +4,9 @@ import abc
 import enum
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
+
+AuditHook = Callable[[str, "RiskLevel | None", dict, bool, "str | None"], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,7 @@ class Tool(abc.ABC):
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._audit_hook: AuditHook | None = None
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -61,14 +64,25 @@ class ToolRegistry:
     def anthropic_tools(self) -> list[dict[str, Any]]:
         return [t.to_anthropic_schema() for t in self._tools.values()]
 
+    def set_audit_hook(self, hook: AuditHook | None) -> None:
+        """Every caller (the agent's own tool loop, local_commands.py's
+        fast path, the scheduler, the planner) goes through execute() --
+        wiring the audit log in here rather than in each caller is the only
+        way "her araç çalıştırması kaydedilir" is actually true for all of
+        them, not just the ones that happen to go through Agent."""
+        self._audit_hook = hook
+
     async def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         tool = self.get(name)
         if tool is None:
             return ToolResult(success=False, error=f"Bilinmeyen araç: {name}")
         try:
-            return await tool.run(**arguments)
+            result = await tool.run(**arguments)
         except Exception:
             logger.exception("Tool execution failed: %s", name)
-            return ToolResult(
+            result = ToolResult(
                 success=False, error=f"'{name}' aracı çalıştırılırken bir hata oluştu."
             )
+        if self._audit_hook is not None:
+            await self._audit_hook(name, tool.risk, arguments, result.success, result.error)
+        return result

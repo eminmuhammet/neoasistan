@@ -22,6 +22,7 @@ from .local_commands import (
     try_handle_locally,
 )
 from .permissions import PermissionManager
+from ..memory.audit_store import AuditStore
 from ..memory.conversation_store import ConversationStore
 from ..memory.preference_store import PreferenceStore
 from ..tools.time_tools import TR_DAYS, TR_MONTHS
@@ -272,6 +273,7 @@ class Agent:
         conversation_store: ConversationStore | None = None,
         preference_store: PreferenceStore | None = None,
         mode_manager: AccessModeManager | None = None,
+        audit_store: AuditStore | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
@@ -281,6 +283,7 @@ class Agent:
         self._conversation_store = conversation_store
         self._preference_store = preference_store
         self._mode_manager = mode_manager
+        self._audit_store = audit_store
         self._mode_unlock_control = None
         self.research_mode = False
         self._listening_control = None
@@ -517,7 +520,16 @@ class Agent:
                 allowed = await self._permissions.check(block.name, risk, str(block.input))
 
                 if not allowed:
-                    result = {"success": False, "error": self._denial_message(risk)}
+                    denial = self._denial_message(risk)
+                    result = {"success": False, "error": denial}
+                    # A denial never reaches registry.execute (and so never
+                    # reaches its audit hook), but "what did you refuse to
+                    # do" is exactly as much a security-relevant fact as
+                    # "what did you actually run" -- log it here instead.
+                    if self._audit_store is not None:
+                        await asyncio.to_thread(
+                            self._audit_store.log, block.name, risk.value, block.input, False, denial
+                        )
                 else:
                     tool_result = await self._registry.execute(block.name, block.input)
                     result = tool_result.to_dict()
