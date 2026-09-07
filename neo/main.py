@@ -32,6 +32,7 @@ from .tools.calendar import (
 )
 from .tools.document_search import ReadDocumentTool
 from .tools.filesystem import FindFileTool, OpenFolderTool
+from .tools.media import GetVolumeTool, MediaControlTool, SetMuteTool, SetVolumeTool
 from .tools.google_calendar import GoogleCalendarSync
 from .tools.preferences import (
     ForgetPreferenceTool,
@@ -102,6 +103,11 @@ def build_registry(settings: Settings) -> ToolRegistry:
     registry.register(FindFileTool())
     registry.register(OpenFolderTool())
     registry.register(ReadDocumentTool())
+
+    registry.register(GetVolumeTool())
+    registry.register(SetVolumeTool())
+    registry.register(SetMuteTool())
+    registry.register(MediaControlTool())
 
     registry.register(LockComputerTool())
     registry.register(ShutdownComputerTool())

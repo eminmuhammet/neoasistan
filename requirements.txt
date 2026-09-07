@@ -44,3 +44,8 @@ keyboard>=0.13.5
 pypdf>=6.0
 python-docx>=1.2
 openpyxl>=3.1
+
+# V2 -- media control (system volume + play/pause/next/previous), see
+# NEO_V2_PLAN.md item 9; media keys use ctypes (no extra dependency)
+pycaw>=20251023
+comtypes>=1.4
