@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 
 from PySide6.QtCore import Qt, QTimer
@@ -22,7 +23,9 @@ from PySide6.QtWidgets import (
 from ..config import autostart
 from ..config.version import __version__
 from ..core.updater import UpdateError, apply_update, check_for_update, download_update
+from ..core.access_mode import AccessMode
 from ..core.agent import Agent, extract_spoken_summary
+from ..memory.audit_store import AuditStore
 from ..core.state import AgentState
 from ..voice.audio_features import has_enough_speech, speech_seconds
 from ..voice.chime import play_activation_chime
@@ -188,6 +191,11 @@ class MainWindow(QMainWindow):
         title_col.addWidget(title)
         title_col.addWidget(subtitle)
 
+        self._access_mode_label = QLabel()
+        self._access_mode_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self._access_mode_label.hide()
+
+        header_layout.addWidget(self._access_mode_label)
         header_layout.addStretch(1)
         header_layout.addLayout(title_col)
         header_layout.addStretch(1)
@@ -237,6 +245,13 @@ class MainWindow(QMainWindow):
         self._research_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._research_label.hide()
         sphere_col_layout.addWidget(self._research_label)
+
+        self._task_label = QLabel()
+        self._task_label.setObjectName("StatusLabel")
+        self._task_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._task_label.setStyleSheet("color: #4db8ff; font-size: 11px;")
+        self._task_label.hide()
+        sphere_col_layout.addWidget(self._task_label)
 
         content_layout.addWidget(sphere_col, stretch=0)
 
@@ -318,6 +333,16 @@ class MainWindow(QMainWindow):
         self._update_button.clicked.connect(self._on_update_clicked)
         self._update_button.hide()
         ctrl.addWidget(self._update_button)
+
+        # ── Notification toast (above control bar, auto-dismiss) ─────────
+        self._notif_label = QLabel()
+        self._notif_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._notif_label.setStyleSheet(
+            "color: #d9ece0; background-color: #0f2a1e; border: 1px solid #35e08a44;"
+            "border-radius: 8px; padding: 6px 16px; font-size: 12px;"
+        )
+        self._notif_label.hide()
+        outer_layout.addWidget(self._notif_label)
 
         outer_layout.addWidget(control_bar)
 
@@ -997,3 +1022,38 @@ class MainWindow(QMainWindow):
                 self._speaking = False
 
         self._set_state(AgentState.IDLE)
+
+    # ── Backend integration API ────────────────────────────────────────────
+
+    def set_access_mode(self, mode: AccessMode) -> None:
+        """Show/update the current access-mode badge in the header."""
+        label = self._access_mode_label
+        if mode is AccessMode.HELPER:
+            label.setText("● YARDIMCI MOD")
+            label.setStyleSheet("color: #f2b134; font-size: 10px; font-weight: 700; letter-spacing: 2px;")
+        else:
+            label.setText("● ASİSTAN MOD")
+            label.setStyleSheet("color: #35e08a; font-size: 10px; font-weight: 700; letter-spacing: 2px;")
+        label.setVisible(True)
+
+    def set_task_progress(self, task_name: str, step: int, total: int, status: str = "") -> None:
+        """Show a one-line task progress indicator below the sphere."""
+        if total <= 0 or step >= total:
+            self._task_label.setVisible(False)
+            return
+        pct = math.floor(100 * step / total)
+        text = f"◈  {task_name}  {step}/{total} ({pct}%)"
+        if status:
+            text += f"  — {status}"
+        self._task_label.setText(text)
+        self._task_label.setVisible(True)
+
+    def show_proactive_notification(self, text: str, duration_ms: int = 4000) -> None:
+        """Toast a short notification above the control bar, auto-dismiss after duration_ms."""
+        self._notif_label.setText(text)
+        self._notif_label.setVisible(True)
+        QTimer.singleShot(duration_ms, lambda: self._notif_label.setVisible(False))
+
+    def set_audit_store(self, audit_store: AuditStore) -> None:
+        """Receive the audit store reference post-construction."""
+        self._audit_store = audit_store
