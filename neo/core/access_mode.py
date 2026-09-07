@@ -71,6 +71,14 @@ class AccessModeManager:
             return None
         return max(0.0, self._idle_timeout - self._idle_seconds())
 
+    def set_on_change(self, callback: ModeChangedCallback | None) -> None:
+        """Lets a caller wire the mode-changed notification after this
+        manager already exists -- needed because the GUI that wants to
+        display the current mode is built after PermissionManager/Agent,
+        which both need a mode_manager instance up front. Same post-hoc
+        wiring pattern as PermissionManager.set_confirm."""
+        self._on_change = callback
+
     def unlock_helper_mode(self) -> None:
         """Switches to helper mode. Callers must have already verified the
         password themselves (see config.credentials.PasswordStore) -- this

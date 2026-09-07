@@ -95,6 +95,31 @@ def test_on_change_callback_fires_on_real_transitions_only():
     assert changes == [AccessMode.HELPER, AccessMode.ASSISTANT]
 
 
+def test_set_on_change_wires_a_callback_after_construction():
+    """The GUI that wants to display the mode is built after this manager
+    already exists (Agent/PermissionManager need it up front) -- so the
+    callback has to be attachable post-hoc, not only via the constructor."""
+    manager = AccessModeManager()
+    changes = []
+
+    manager.set_on_change(changes.append)
+    manager.unlock_helper_mode()
+
+    assert changes == [AccessMode.HELPER]
+
+
+def test_set_on_change_can_replace_an_existing_callback():
+    first_calls = []
+    second_calls = []
+    manager = AccessModeManager(on_change=first_calls.append)
+
+    manager.set_on_change(second_calls.append)
+    manager.unlock_helper_mode()
+
+    assert first_calls == []
+    assert second_calls == [AccessMode.HELPER]
+
+
 def test_on_change_callback_fires_on_automatic_expiry(monkeypatch):
     import neo.core.access_mode as am
 

@@ -459,3 +459,30 @@ def test_no_progress_callback_is_fine(tmp_path):
 
     success, _ = asyncio.run(planner.run("Hedef"))
     assert success is True
+
+
+def test_set_on_progress_wires_a_callback_after_construction(tmp_path):
+    """The GUI that wants to display task progress is built after this
+    planner already exists (it's registered as a tool before the window
+    does) -- so the callback has to be attachable post-hoc."""
+    seen_statuses = []
+    agent = FakeAgent(plan_steps=["adım"], verify_results=[(True, "ok")], subtask_results=["x"])
+    planner, _ = _planner(tmp_path, agent, on_progress=None)
+
+    planner.set_on_progress(lambda task: seen_statuses.append(task.status))
+    asyncio.run(planner.run("Hedef"))
+
+    assert seen_statuses[-1] == "done"
+
+
+def test_set_on_progress_can_replace_an_existing_callback(tmp_path):
+    first_calls = []
+    second_calls = []
+    agent = FakeAgent(plan_steps=["adım"], verify_results=[(True, "ok")], subtask_results=["x"])
+    planner, _ = _planner(tmp_path, agent, on_progress=lambda task: first_calls.append(task))
+
+    planner.set_on_progress(lambda task: second_calls.append(task))
+    asyncio.run(planner.run("Hedef"))
+
+    assert first_calls == []
+    assert len(second_calls) >= 1

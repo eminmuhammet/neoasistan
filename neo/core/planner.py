@@ -168,6 +168,14 @@ class TaskPlanner:
         self._task_store = task_store
         self._on_progress = on_progress
 
+    def set_on_progress(self, callback: ProgressCallback | None) -> None:
+        """Lets a caller wire progress notification after this planner
+        already exists -- needed because the GUI that wants to display
+        task progress is built after this planner (which is registered as
+        a tool before the window exists). Same post-hoc wiring pattern as
+        PermissionManager.set_confirm / AccessModeManager.set_on_change."""
+        self._on_progress = callback
+
     async def run(self, goal: str) -> tuple[bool, str]:
         task_id = await asyncio.to_thread(self._task_store.create_task, goal)
 

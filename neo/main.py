@@ -223,11 +223,11 @@ def main() -> int:
 
     # Proaktif NEO (see core/scheduler.py, core/disk_watch.py): a fired job
     # or a critical disk-space alert is written to conversation history so
-    # it isn't lost, but there is deliberately no live on-screen popup or
-    # spoken announcement here yet -- that surface lives in main_window.py,
-    # which is under active redesign in a parallel work stream. Wiring
-    # through the stable, public conversation_store keeps this feature
-    # fully working without touching that file.
+    # it's never lost even if no one sees the on-screen toast. The
+    # Scheduler/DiskSpaceWatcher instances themselves are constructed after
+    # `window` below (they also call window.show_proactive_notification),
+    # since they don't need to exist this early -- only the store and tools
+    # do.
     scheduled_job_store = ScheduledJobStore(settings.data_dir / "scheduled_jobs.db")
     registry.register(ScheduleTaskTool(scheduled_job_store))
     registry.register(ListScheduledTasksTool(scheduled_job_store))
@@ -246,18 +246,6 @@ def main() -> int:
             "08:00",
             first_run.isoformat(),
         )
-
-    scheduler = Scheduler(
-        agent,
-        scheduled_job_store,
-        on_fire=lambda job, text: conversation_store.add_message("assistant", text),
-    )
-    scheduler.start()
-
-    disk_watcher = DiskSpaceWatcher(
-        on_alert=lambda text: conversation_store.add_message("assistant", text),
-    )
-    disk_watcher.start()
 
     recorder = PushToTalkRecorder()
     stt = WhisperSTT(model_size=settings.whisper_model, device=settings.whisper_device)
@@ -293,6 +281,33 @@ def main() -> int:
     agent.set_mode_unlock_control(
         lambda: request_helper_mode_unlock(password_store, mode_manager, parent=window)
     )
+
+    # Mode indicator / task progress / audit / proactive notifications: all
+    # four surfaces live on the GUI, wired post-hoc for the same reason as
+    # permissions.set_confirm above -- the objects that produce this data
+    # (mode_manager, planner, audit_store) exist before `window` does.
+    mode_manager.set_on_change(window.set_access_mode)
+
+    def _on_task_progress(task) -> None:
+        counted_steps = [s for s in task.steps if s.status != "skipped"]
+        done = sum(1 for s in counted_steps if s.status in ("done", "failed"))
+        window.set_task_progress(task.goal, done, len(counted_steps), task.status)
+
+    planner.set_on_progress(_on_task_progress)
+    window.set_audit_store(audit_store)
+
+    def _announce(text: str) -> None:
+        conversation_store.add_message("assistant", text)
+        window.show_proactive_notification(text)
+
+    scheduler = Scheduler(
+        agent, scheduled_job_store, on_fire=lambda job, text: _announce(text)
+    )
+    scheduler.start()
+
+    disk_watcher = DiskSpaceWatcher(on_alert=_announce)
+    disk_watcher.start()
+
     window.show()
 
     # Telefon/web paneli (see NEO_V2_PLAN.md item 10): opt-in, since it
