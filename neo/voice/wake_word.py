@@ -294,6 +294,8 @@ class WakeWordListener:
                                     min_voiced / SAMPLE_RATE,
                                     self._config.energy_threshold,
                                 )
+                                # Signal UI to reset from LISTENING back to IDLE
+                                asyncio.ensure_future(on_command(""))
                                 continue
 
                             # Loudness said "maybe"; ask a real speech
@@ -309,6 +311,8 @@ class WakeWordListener:
                                     self._config.min_command_speech_seconds,
                                     finished.size / SAMPLE_RATE,
                                 )
+                                # Signal UI to reset from LISTENING back to IDLE
+                                asyncio.ensure_future(on_command(""))
                                 continue
 
                             try:

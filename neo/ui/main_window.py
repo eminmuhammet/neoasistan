@@ -978,6 +978,10 @@ class MainWindow(QMainWindow):
 
     async def _on_wake_command(self, text: str) -> None:
         self._active_command_task = asyncio.current_task()
+        if not text:
+            # Komut VAD tarafından reddedildi — LISTENING'den IDLE'a dön
+            self._set_state(AgentState.IDLE)
+            return
         await self._handle_recognized_text(text)
 
     # -- shared: recognized speech -> agent -> (optional) speech reply ----
