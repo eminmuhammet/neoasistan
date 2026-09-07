@@ -4,7 +4,9 @@ import math
 import random
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+import threading
+
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
@@ -56,7 +58,7 @@ _N_STARS     = 250   # background star field (fixed, no rotation)
 
 # Internal render resolution — blur cost is O(N²), so keep this fixed
 # regardless of widget/screen size; Qt scales up with SmoothTransformation.
-_RENDER_SIZE = 400
+_RENDER_SIZE = 600
 
 # Background colour (matches app theme #060a08)
 _BG = np.array([0.024, 0.039, 0.031], dtype=np.float32)
@@ -209,6 +211,8 @@ class NeuroVisual(QWidget):
     _COMPACT_SIZE = 280
     _FOCUS_SIZE   = 560
 
+    _frame_ready = Signal(QPixmap)  # emitted from render thread → main thread
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._focus = False
@@ -221,10 +225,16 @@ class NeuroVisual(QWidget):
         self._breathe_phase = 0.0
         self._breathe       = 0.5
         self._time          = 0.0
-        self._audio_level        = 0.0   # raw input 0-1, set externally
-        self._audio_level_smooth = 0.0   # smoothed for rendering
+        self._audio_level        = 0.0
+        self._audio_level_smooth = 0.0
 
         self._pdata = _ParticleData(_N_SPHERE, _N_STARS)
+
+        self._cached_pixmap: QPixmap | None = None
+        self._render_lock = threading.Lock()   # one render thread at a time
+        self._rendering   = False
+
+        self._frame_ready.connect(self._on_frame_ready)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -250,6 +260,11 @@ class NeuroVisual(QWidget):
         Call repeatedly while SPEAKING; resets automatically on state change."""
         self._audio_level = max(0.0, min(1.0, float(level)))
 
+    def _on_frame_ready(self, pixmap: QPixmap) -> None:
+        self._cached_pixmap = pixmap
+        self._rendering = False
+        self.update()
+
     # ── Animation ─────────────────────────────────────────────────────────
     def _tick(self) -> None:
         dt = self._timer.interval()
@@ -263,12 +278,20 @@ class NeuroVisual(QWidget):
         self._hue  += (target_hue - self._hue) * 0.06
         self._sat  += (target_sat - self._sat) * 0.06
 
-        # Smooth audio level — fast attack (0.4), slow release (0.12)
         target = self._audio_level
         alpha  = 0.40 if target > self._audio_level_smooth else 0.12
         self._audio_level_smooth += (target - self._audio_level_smooth) * alpha
 
-        self.update()
+        # Kick off a render only if the previous one finished
+        if not self._rendering:
+            self._rendering = True
+            # Snapshot mutable state for the thread
+            snap = (
+                self._state, self._hue, self._sat, self._yaw,
+                self._breathe, self._time, self._audio_level_smooth,
+            )
+            t = threading.Thread(target=self._render_thread, args=(snap,), daemon=True)
+            t.start()
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -279,31 +302,31 @@ class NeuroVisual(QWidget):
         self._timer.stop()
         super().hideEvent(event)
 
+    def _render_thread(self, snap: tuple) -> None:
+        pixmap = self._render_frame(snap)
+        self._frame_ready.emit(pixmap)
+
     # ── Rendering ─────────────────────────────────────────────────────────
-    def _rotation_matrix(self) -> np.ndarray:
-        """3×3 rotation: yaw (Y-axis) followed by oscillating pitch (X-axis)."""
-        yaw   = self._yaw
-        pitch = math.sin(self._yaw * 0.38) * 0.32
+    def _rotation_matrix(self, yaw: float) -> np.ndarray:
+        pitch = math.sin(yaw * 0.38) * 0.32
         cy, sy = math.cos(yaw),   math.sin(yaw)
         cp, sp = math.cos(pitch), math.sin(pitch)
-        # Ry @ Rx
         return np.array([
             [cy,  sy*sp,  sy*cp],
             [0,   cp,    -sp   ],
             [-sy, cy*sp,  cy*cp],
         ], dtype=np.float32)
 
-    def _render_frame(self) -> QPixmap:
-        """Render at fixed _RENDER_SIZE×_RENDER_SIZE; caller scales to widget."""
+    def _render_frame(self, snap: tuple) -> QPixmap:
+        """Pure function — runs on a background thread, no self mutation."""
+        state, hue, sat, yaw, breathe, time_, av = snap
         S  = _RENDER_SIZE
         pd = self._pdata
-        av = self._audio_level_smooth
 
-        voice_swell = av * 0.18 if self._state == AgentState.SPEAKING else 0.0
-        breath = 0.97 + 0.06 * self._breathe + voice_swell
+        voice_swell = av * 0.18 if state == AgentState.SPEAKING else 0.0
+        breath = 0.97 + 0.06 * breathe + voice_swell
 
-        # ── Project sphere particles ──────────────────────────────────────
-        R     = self._rotation_matrix()
+        R     = self._rotation_matrix(yaw)
         pos   = (pd.sphere_dirs * (pd.sphere_radii * breath)[:, None]) @ R.T
         psc   = _CAM_DIST / np.maximum(_CAM_DIST - pos[:, 2], 0.01)
         depth = np.clip((pos[:, 2] + 1.0) * 0.5, 0.0, 1.0)
@@ -312,12 +335,12 @@ class NeuroVisual(QWidget):
         px = (pos[:, 0] * psc * _CLIP_SCALE * cx + cx).astype(np.int32)
         py = ((-pos[:, 1]) * psc * _CLIP_SCALE * cy + cy).astype(np.int32)
 
-        tw    = 0.5 + 0.5 * np.sin(self._time * 2.4 + pd.sphere_phases)
+        tw    = 0.5 + 0.5 * np.sin(time_ * 2.4 + pd.sphere_phases)
         alpha = (0.55 + 0.45 * depth) * (0.60 + 0.40 * tw) * (pd.sphere_sizes / 3.0)
         alpha *= (1.0 + 0.9 * av)
 
-        val     = np.clip(0.65 + 0.35 * depth + 0.15 * av, 0.0, 1.0).astype(np.float32)
-        rgb     = _hsv_to_rgb(self._hue % 1.0, self._sat, val)
+        val      = np.clip(0.65 + 0.35 * depth + 0.15 * av, 0.0, 1.0).astype(np.float32)
+        rgb      = _hsv_to_rgb(hue % 1.0, sat, val)
         weighted = rgb * alpha[:, None]
 
         buf  = np.zeros((S, S, 3), dtype=np.float32)
@@ -327,23 +350,20 @@ class NeuroVisual(QWidget):
             for ch in range(3):
                 buf[:, :, ch].flat += np.bincount(idx, weights=weighted[mask, ch], minlength=S * S)
 
-        # ── Background stars ──────────────────────────────────────────────
-        stw    = 0.35 + 0.65 * np.sin(self._time * 1.5 + pd.star_phases)
+        stw    = 0.35 + 0.65 * np.sin(time_ * 1.5 + pd.star_phases)
         s_alph = stw * 0.40
         spx = (pd.star_sx * cx + cx).astype(np.int32)
         spy = (pd.star_sy * cy + cy).astype(np.int32)
         s_mask = (spx >= 0) & (spx < S) & (spy >= 0) & (spy < S)
         if s_mask.any():
-            s_idx  = spy[s_mask] * S + spx[s_mask]
-            s_rgb  = np.tile([0.78, 0.90, 1.00], (s_mask.sum(), 1))
-            s_w    = s_rgb * s_alph[s_mask, None]
+            s_idx = spy[s_mask] * S + spx[s_mask]
+            s_rgb = np.tile([0.78, 0.90, 1.00], (s_mask.sum(), 1))
+            s_w   = s_rgb * s_alph[s_mask, None]
             for ch in range(3):
                 buf[:, :, ch].flat += np.bincount(s_idx, weights=s_w[:, ch], minlength=S * S)
 
-        # ── Glow: 2-pass box blur for halo, 1-pass for bloom ────────────────
-        g1_tmp = _box_blur1(buf, 2)
-        g1     = _box_blur1(g1_tmp, 2)         # 2×box → smoother halo
-        g2     = _box_blur1(buf, 24)            # wide bloom (single pass, fast)
+        g1 = _box_blur1(_box_blur1(buf, 2), 2)   # 2×box halo
+        g2 = _box_blur1(buf, 28)                   # wide bloom
 
         glow_mult = 26.0 + 18.0 * av
         result = np.clip(_BG + g1 * glow_mult + g2 * (2.8 + 3.0 * av), 0.0, 1.0)
@@ -355,8 +375,14 @@ class NeuroVisual(QWidget):
         return QPixmap.fromImage(img)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        W, H   = self.width(), self.height()
-        pixmap = self._render_frame()
+        W, H = self.width(), self.height()
+        pixmap = self._cached_pixmap
+        if pixmap is None:
+            # First frame not ready yet — fill with background colour
+            painter = QPainter(self)
+            painter.fillRect(0, 0, W, H, Qt.GlobalColor.black)
+            painter.end()
+            return
         scaled = pixmap.scaled(
             W, H,
             Qt.AspectRatioMode.KeepAspectRatio,
