@@ -58,8 +58,8 @@ _N_STARS     = 250   # background star field (fixed, no rotation)
 # regardless of widget/screen size; Qt scales up with SmoothTransformation.
 _RENDER_SIZE = 400
 
-# Background colour — pure black for maximum contrast/glow pop
-_BG = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+# Background colour (matches app theme #060a08)
+_BG = np.array([0.024, 0.039, 0.031], dtype=np.float32)
 
 
 def _rand_unit_sphere(n: int, rng: random.Random) -> np.ndarray:
