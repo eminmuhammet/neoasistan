@@ -257,9 +257,26 @@ class MainWindow(QMainWindow):
         self._append("NEO", "Merhaba, dinliyorum.")
 
     def _on_info_clicked(self) -> None:
+        # QMessageBox.about() calls exec() internally, which spins a nested
+        # Qt event loop. qasync refuses to run other tasks inside that loop,
+        # so clicking this while a voice command was in flight raised
+        # "Cannot enter into task ... while another task is being executed"
+        # and killed whatever task was running -- observed live destroying
+        # the task handling a Claude reply, which is why TTS never spoke it.
+        # This was the same hazard confirm_action had, fixed the same way:
+        # a non-modal dialog via open() instead of a blocking exec().
         from PySide6.QtWidgets import QMessageBox
 
-        QMessageBox.about(self, "NEO Hakkında", build_about_text(self._wake_phrase))
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("NEO Hakkında")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(build_about_text(self._wake_phrase))
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        # Nothing awaits this dialog's answer, so it only needs to not block
+        # the loop -- open() and letting it clean itself up is enough.
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.open()
 
     # -- system tray (stay running in the background) ----------------------
 
@@ -805,15 +822,23 @@ class MainWindow(QMainWindow):
             self._update_wake_toggle_label()
 
     async def _on_wake_detected(self) -> None:
-        asyncio.ensure_future(play_activation_chime())
         if self._active_command_task is not None and not self._active_command_task.done():
             self._active_command_task.cancel()
             self._append("NEO", "(cevap kesildi)")
-        # Waking up is not a chat message: the chime and the orb switching to
+        # Waking up is not a chat message: the cue and the orb switching to
         # "Dinleniyor..." already say it. Writing "Dinliyorum." into the
         # transcript every time meant a stretch of false wake-ups buried the
         # real conversation under a wall of identical bubbles.
         self._set_state(AgentState.LISTENING)
+
+        # Muted while the cue plays: it is speech now, and the wake loop
+        # would otherwise capture NEO's own "Dinliyorum efendim" and hand it
+        # straight back as the user's command.
+        self._speaking = True
+        try:
+            await play_activation_chime()
+        finally:
+            self._speaking = False
 
     async def _on_wake_command(self, text: str) -> None:
         self._active_command_task = asyncio.current_task()

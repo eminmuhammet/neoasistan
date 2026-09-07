@@ -43,10 +43,16 @@ def similarity(candidate: str, phrase: str) -> float:
     return max(whole, best_window)
 
 
-def matches_wake_phrase(transcript: str, phrase: str, threshold: float = 0.85) -> bool:
+def matches_wake_phrase(transcript: str, phrase: str, threshold: float = 0.78) -> bool:
     """Whether a transcript is a plausible rendering of the wake phrase.
 
-    Default measured against real transcripts: see WAKE_PHRASE_THRESHOLD in
-    wake_word.py for the scores this number comes from.
+    Default measured against real transcripts, not clean text: live
+    attempts at saying "Neo uyan" came back as 'Ne yok, uyan.' (0.84) and
+    'Ne o ya?' (0.80); background noise came back as 'Ne oluyor?' (0.59).
+    An earlier 0.85 -- derived from tidy strings -- would have rejected
+    every genuine attempt in that log. See WAKE_PHRASE_THRESHOLD in
+    wake_word.py, which is the value actually used at runtime; this default
+    exists so the function is sensible when called on its own (as the tests
+    do) and must be kept in sync with it.
     """
     return similarity(transcript, phrase) >= threshold

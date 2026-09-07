@@ -33,6 +33,7 @@ from .tools.system_info import (
     GetSystemInfoTool,
 )
 from .tools.time_tools import GetDateTool, GetTimeTool
+from .voice import chime
 from .tools.weather import GetWeatherTool
 from .ui.main_window import MainWindow
 from .voice.keyword_spotter import KeywordSpotter
@@ -128,6 +129,11 @@ def main() -> int:
     # Checked in the background so a slow or unreachable update server can
     # never delay startup; a failure here is silent by design.
     loop.create_task(window.check_for_update())
+
+    # Wake-up cues are synthesized once and cached, so hearing "Dinliyorum
+    # efendim" doesn't cost a network round trip every time NEO is woken.
+    chime.configure(settings.data_dir)
+    loop.create_task(chime.prepare_cues())
 
     with loop:
         return loop.run_forever()

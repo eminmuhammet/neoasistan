@@ -53,6 +53,41 @@ _TURKISH_LCID = "41f"
 EDGE_ATTEMPTS = 3
 EDGE_RETRY_SECONDS = 0.8
 
+# Roughly a sentence. Short enough that the first one is synthesized almost
+# instantly, long enough that the voice doesn't sound chopped between them.
+_MIN_CHUNK_CHARS = 90
+_SENTENCE_END = _re.compile(r"(?<=[.!?…:])\s+")
+
+
+def split_for_speech(text: str) -> list[str]:
+    """Splits a reply into chunks that can be spoken as they are produced.
+
+    Short replies stay whole -- splitting "Saat 14.30." would only add a
+    seam. Longer ones are broken on sentence boundaries so the first words
+    can start playing while the rest is still being synthesized.
+    """
+    stripped = text.strip()
+    if len(stripped) <= _MIN_CHUNK_CHARS:
+        return [stripped] if stripped else []
+
+    chunks: list[str] = []
+    current = ""
+    for sentence in _SENTENCE_END.split(stripped):
+        candidate = f"{current} {sentence}".strip() if current else sentence
+        if len(candidate) >= _MIN_CHUNK_CHARS:
+            chunks.append(candidate)
+            current = ""
+        else:
+            current = candidate
+    if current:
+        # A short tail is appended to the previous chunk rather than spoken
+        # on its own, which would land as an odd clipped fragment.
+        if chunks and len(current) < 40:
+            chunks[-1] = f"{chunks[-1]} {current}"
+        else:
+            chunks.append(current)
+    return chunks
+
 _SVSF_ASYNC = 1
 _SVSF_PURGE_BEFORE_SPEAK = 2
 
@@ -168,11 +203,26 @@ class EdgeTTS:
         if not text.strip():
             return
         try:
-            import edge_tts
+            import edge_tts  # noqa: F401
         except ImportError as exc:
             raise TTSUnavailableError("edge-tts kurulu değil.") from exc
 
         self._stop_event.clear()
+
+        # Synthesized and played one chunk at a time. Doing the whole reply
+        # first meant nothing was audible until the entire text had been
+        # turned into audio over the network -- on a long answer that is
+        # several seconds of silence after NEO has already decided what to
+        # say. Speaking the first sentence while the rest is still being
+        # made removes that wait almost entirely.
+        for chunk in split_for_speech(text):
+            if self._stop_event.is_set():
+                return
+            await self._speak_chunk(chunk)
+
+    async def _speak_chunk(self, text: str) -> None:
+        import edge_tts
+
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as handle:
             temp_path = handle.name
 

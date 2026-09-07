@@ -73,3 +73,31 @@ def test_confirmation_follows_the_configured_phrase(tmp_path):
 
     other = _listener(tmp_path, FakeSTT("bilgisayar dinle"), phrase="Neo uyan")
     assert asyncio.run(other._confirm_wake_phrase(AUDIO)) is False
+
+
+def test_confirmation_is_rate_limited(tmp_path, monkeypatch):
+    """Live log: the acoustic matcher fired repeatedly on the same noise and
+    the recognizer ran three times inside two seconds -- confirmation costs
+    about a second of CPU, so the machine spent its time transcribing an
+    empty room instead of answering the user, which was a large part of why
+    replies felt slow."""
+    import neo.voice.wake_word as ww
+
+    stt = FakeSTT("Neo uyan")
+    listener = _listener(tmp_path, stt)
+
+    clock = [100.0]
+    monkeypatch.setattr(ww.time, "monotonic", lambda: clock[0])
+
+    assert asyncio.run(listener._confirm_wake_phrase(AUDIO)) is True
+    assert stt.calls == 1
+
+    # Immediately again: within the cooldown window, must not re-transcribe.
+    clock[0] += 0.1
+    assert asyncio.run(listener._confirm_wake_phrase(AUDIO)) is False
+    assert stt.calls == 1, "cooldown icindeyken tekrar transcribe cagirilmamali"
+
+    # After the cooldown elapses, confirmation runs again.
+    clock[0] += ww.CONFIRM_COOLDOWN_SECONDS
+    assert asyncio.run(listener._confirm_wake_phrase(AUDIO)) is True
+    assert stt.calls == 2

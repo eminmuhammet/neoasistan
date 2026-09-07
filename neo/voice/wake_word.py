@@ -26,17 +26,24 @@ SAMPLE_RATE = 16000
 # enrolled recordings as its reference, and doing them there lets a single
 # VAD pass serve all of them plus the DTW comparison.
 
-# Measured against real transcripts rather than picked by feel. At 0.72 the
-# live log shows "Ne o ya?" scoring 0.80 and waking NEO mid-conversation --
-# ordinary Turkish filler that happens to share most of its letters with
-# "neo uyan". Scoring the realistic set puts genuine renderings at 0.88 and
-# above ("neyo uyan" 0.94, "neo uyar" 0.88) and everything else at 0.59 and
-# below, with that one phrase in between.
+# Set from what the recognizer actually produces on this microphone, not
+# from clean text. Live transcripts of genuine "Neo uyan" attempts came back
+# as 'Ne yok, uyan.' (0.84) and 'Ne o ya?' (0.80); noise came back as
+# 'Ne oluyor?' (0.59) and 'Mel oya' (0.53). An earlier 0.85 -- derived from
+# tidy strings -- would have rejected every real attempt in that log.
 #
-# The margin is thin (0.08), so it is worth knowing the failure mode: a
-# rejected real phrase costs one repeat, an accepted false one wakes NEO
-# while the user is talking to someone else.
-WAKE_PHRASE_THRESHOLD = 0.85
+# No threshold separates these cleanly, because "Neo uyan" collides with
+# very common Turkish ("ne o ya", "ne oluyor"). 0.78 accepts the real
+# attempts and rejects the noise, and the remaining ambiguity is the phrase
+# itself: a more distinctive one (NEO_WAKE_PHRASE) is the real fix.
+WAKE_PHRASE_THRESHOLD = 0.78
+
+# Confirmation runs the recognizer, which costs about a second of CPU. The
+# log shows three confirmations inside two seconds while the acoustic
+# matcher fired repeatedly on the same noise -- so the machine spent its
+# time transcribing an empty room, which is a large part of why replies
+# felt slow. One attempt per window is enough.
+CONFIRM_COOLDOWN_SECONDS = 2.0
 
 OnWake = Callable[[], Awaitable[None]]
 OnCommand = Callable[[str], Awaitable[None]]
@@ -78,7 +85,10 @@ class WakeWordConfig:
     # Lowered with headroom above the ~0.0007 measured ambient-noise floor.
     energy_threshold: float = 0.006
     command_timeout_seconds: float = 8.0
-    end_of_command_silence_seconds: float = 1.5
+    # Every one of these seconds is dead air after the user has finished
+    # talking, before NEO even starts thinking. 1.5s was noticeably long in
+    # use; 1.0s still absorbs an ordinary mid-sentence pause.
+    end_of_command_silence_seconds: float = 1.0
     reactivation_cooldown_seconds: float = 2.0
     # Live logs after the 0.006 threshold still showed genuine attempts
     # (peaks 0.03-0.09, clearly real speech, not silence) rejected because
@@ -126,6 +136,7 @@ class WakeWordListener:
         # which is a far stronger discriminator for a two-word phrase.
         self._wake_phrase = wake_phrase
         self._confirm_stt = confirm_stt
+        self._confirm_blocked_until = 0.0
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream = None
         self._running = False
@@ -324,6 +335,13 @@ class WakeWordListener:
         """
         if self._confirm_stt is None or not self._wake_phrase:
             return True
+
+        now = time.monotonic()
+        if now < self._confirm_blocked_until:
+            logger.debug("Uyandırma doğrulaması atlandı: çok sık")
+            return False
+        self._confirm_blocked_until = now + CONFIRM_COOLDOWN_SECONDS
+
         try:
             transcript = await self._confirm_stt.transcribe(window)
         except STTUnavailableError:

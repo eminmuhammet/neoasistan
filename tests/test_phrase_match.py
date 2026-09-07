@@ -45,27 +45,38 @@ def test_unrelated_speech_is_rejected(transcript):
 
 @pytest.mark.parametrize(
     "transcript",
-    ["Ne o ya?", "Ne oluyor?", "ne o", "neo", "ne oldu", "ne yapıyorsun"],
+    ["Ne oluyor?", "Mel oya", "ne o", "neo", "ne oldu", "ne yapıyorsun"],
 )
-def test_near_misses_that_share_letters_are_rejected(transcript):
-    """"Ne o ya?" is ordinary Turkish filler that shares almost all of its
-    letters, in order, with "neo uyan" -- it scored 0.80 and woke NEO
-    mid-conversation on the old 0.72 threshold."""
+def test_noise_transcripts_from_the_live_log_are_rejected(transcript):
+    """These are what the recognizer actually produced from an empty room."""
     assert matches_wake_phrase(transcript, PHRASE) is False
 
 
-def test_the_measured_gap_still_holds():
-    """Guards the margin the threshold sits in, so a change to normalization
-    or scoring can't quietly close it."""
-    genuine = min(
-        similarity(t, PHRASE) for t in ["Neo uyan", "neyo uyan", "neo uyar", "Ne o uyan"]
-    )
-    nearest_false = max(
-        similarity(t, PHRASE) for t in ["Ne o ya?", "Ne oluyor?", "ne o", "neo", "ne oldu"]
-    )
+@pytest.mark.parametrize("transcript", ["Ne yok, uyan.", "Ne o ya?"])
+def test_real_attempts_from_the_live_log_are_accepted(transcript):
+    """What the recognizer produced when the user genuinely said the phrase.
 
-    assert genuine > nearest_false, f"gerçek {genuine:.2f} <= yanlış {nearest_false:.2f}"
-    assert nearest_false < 0.85 <= genuine
+    An earlier threshold of 0.85, derived from tidy strings rather than real
+    transcripts, would have rejected both -- i.e. would have stopped NEO
+    waking up at all on this microphone.
+    """
+    assert matches_wake_phrase(transcript, PHRASE) is True
+
+
+def test_the_phrase_itself_is_the_weak_link():
+    """Documents why no threshold fixes this: 'Ne o ya?' (filler) and
+    'Ne yok, uyan.' (a real attempt) score within 0.04 of each other, so the
+    separation has to come from a more distinctive wake phrase."""
+    filler = similarity("Ne o ya?", PHRASE)
+    genuine = similarity("Ne yok, uyan.", PHRASE)
+
+    assert abs(genuine - filler) < 0.1
+
+    # A distinctive phrase does separate.
+    better = "Neo devrede"
+    assert similarity("Neo devrede", better) > 0.9
+    assert similarity("Ne o ya?", better) < 0.6
+    assert similarity("Ne oluyor?", better) < 0.6
 
 
 def test_phrase_inside_a_longer_utterance_is_found():

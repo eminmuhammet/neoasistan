@@ -56,3 +56,16 @@ def test_cancelling_closes_the_dialog():
 
     assert handlers, "CancelledError ele alınmıyor"
     assert "close" in _calls(func)
+
+
+def test_about_dialog_does_not_use_the_blocking_static_method():
+    """QMessageBox.about() calls exec() internally -- the same nested-loop
+    hazard confirm_action had. Live evidence: a qasync 'Cannot enter into
+    task' crash at the exact moment a reply was being handled, on a build
+    where the About dialog still used QMessageBox.about(). The task that
+    crashed was the one carrying the reply to be spoken, which is why the
+    voice reply went missing that session."""
+    calls = _calls(_function("_on_info_clicked"))
+
+    assert "about" not in calls, "QMessageBox.about() ic ice Qt dongusu aciyor"
+    assert "open" in calls
