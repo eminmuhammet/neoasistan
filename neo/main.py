@@ -275,6 +275,21 @@ def main() -> int:
     )
     window.show()
 
+    # Telefon/web paneli (see NEO_V2_PLAN.md item 10): opt-in, since it
+    # opens a LAN-reachable port. The token is generated once and stored
+    # locally; the user copies it to their phone themselves; the panel
+    # never surfaces it over the network.
+    if settings.enable_web_panel:
+        from .web.server import WebPanelServer, load_or_create_token
+
+        web_token = load_or_create_token(settings.data_dir / "web_token.txt")
+        web_panel = WebPanelServer(agent, web_token, port=settings.web_panel_port)
+        web_panel.start()
+        logger.info(
+            "Web paneli %d portunda başlatıldı (token data/web_token.txt dosyasında)",
+            settings.web_panel_port,
+        )
+
     # Checked in the background so a slow or unreachable update server can
     # never delay startup; a failure here is silent by design.
     loop.create_task(window.check_for_update())

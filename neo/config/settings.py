@@ -132,6 +132,11 @@ class Settings:
     # and two words are an easy target for a small model. Empty disables
     # confirmation and leaves the acoustic verdict final.
     wake_confirm_model: str = "base"
+    # Opt-in: this opens a network port (LAN-reachable, token-protected --
+    # see neo/web/server.py), which is not something a fresh install should
+    # do without the user asking for it.
+    enable_web_panel: bool = False
+    web_panel_port: int = 8765
 
     def require_api_key(self) -> str:
         if not self.anthropic_api_key:
@@ -168,4 +173,6 @@ def load_settings() -> Settings:
         update_manifest_url=os.getenv("NEO_UPDATE_MANIFEST_URL") or None,
         wake_phrase=os.getenv("NEO_WAKE_PHRASE", "Neo uyan"),
         wake_confirm_model=os.getenv("NEO_WAKE_CONFIRM_MODEL", "base"),
+        enable_web_panel=os.getenv("NEO_ENABLE_WEB_PANEL", "").strip().lower() in ("1", "true", "yes"),
+        web_panel_port=int(os.getenv("NEO_WEB_PANEL_PORT", "8765")),
     )
