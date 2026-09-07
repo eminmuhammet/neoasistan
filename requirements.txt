@@ -31,3 +31,9 @@ google-api-python-client>=2.140
 # extraction would, see NEO_V2_PLAN.md)
 mss>=9.0
 Pillow>=10.0
+
+# V2 -- computer control (mouse/keyboard automation, HIGH risk, helper-mode
+# only, see NEO_V2_PLAN.md): pyautogui.FAILSAFE stays on (mouse to a screen
+# corner aborts everything); keyboard gives the Ctrl+Alt+Shift+Q panic hotkey
+pyautogui>=0.9.54
+keyboard>=0.13.5

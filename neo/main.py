@@ -11,6 +11,7 @@ from .config.credentials import PasswordStore
 from .config.settings import Settings, load_settings
 from .core.access_mode import AccessModeManager
 from .core.agent import Agent
+from .core.automation_panic import register_panic_hotkey
 from .core.disk_watch import DiskSpaceWatcher
 from .core.permissions import PermissionManager
 from .core.planner import TaskPlanner
@@ -35,6 +36,13 @@ from .tools.preferences import (
     ForgetPreferenceTool,
     RecallPreferencesTool,
     RememberPreferenceTool,
+)
+from .tools.computer_control import (
+    ClickTool,
+    DragTool,
+    MoveMouseTool,
+    PressKeysTool,
+    TypeTextTool,
 )
 from .tools.planning import RunTaskTool
 from .tools.power import LockComputerTool, RestartComputerTool, ShutdownComputerTool
@@ -97,6 +105,17 @@ def build_registry(settings: Settings) -> ToolRegistry:
     registry.register(ShutdownComputerTool())
     registry.register(RestartComputerTool())
     registry.register(CaptureScreenTool())
+
+    # HIGH risk (see NEO_V2_PLAN.md item 7): PermissionManager already
+    # refuses HIGH-risk tools outright while in ASSISTANT mode, so these
+    # only ever run in helper mode, and even there each call still asks
+    # for the user's confirmation -- the tool's raw input (coordinates,
+    # keys, text) is exactly what the confirmation dialog previews.
+    registry.register(ClickTool())
+    registry.register(MoveMouseTool())
+    registry.register(DragTool())
+    registry.register(TypeTextTool())
+    registry.register(PressKeysTool())
     return registry
 
 
@@ -110,6 +129,17 @@ def main() -> int:
     asyncio.set_event_loop(loop)
 
     registry = build_registry(settings)
+
+    # Panic hotkey for computer-control automation (Ctrl+Alt+Shift+Q),
+    # independent of pyautogui's own move-to-corner FAILSAFE. Registered
+    # once at startup regardless of mode, since helper mode can be
+    # unlocked at any point during the session. A failure here (e.g. the
+    # global keyboard hook can't be installed) must never crash startup --
+    # pyautogui's FAILSAFE remains as the fallback panic mechanism.
+    try:
+        register_panic_hotkey()
+    except Exception:
+        logger.exception("Panik tuşu (Ctrl+Alt+Shift+Q) kaydedilemedi")
 
     # Assistant/helper authority mode (see core/access_mode.py): NEO starts
     # in the restricted assistant mode every launch. The password itself
