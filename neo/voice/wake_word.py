@@ -36,7 +36,7 @@ SAMPLE_RATE = 16000
 # very common Turkish ("ne o ya", "ne oluyor"). 0.78 accepts the real
 # attempts and rejects the noise, and the remaining ambiguity is the phrase
 # itself: a more distinctive one (NEO_WAKE_PHRASE) is the real fix.
-WAKE_PHRASE_THRESHOLD = 0.78
+WAKE_PHRASE_THRESHOLD = 0.72
 
 # Confirmation runs the recognizer, which costs about a second of CPU. The
 # log shows three confirmations inside two seconds while the acoustic
@@ -94,7 +94,7 @@ class WakeWordConfig:
     # (peaks 0.03-0.09, clearly real speech, not silence) rejected because
     # only 0.06-0.16s of the buffer counted as "voiced" -- lowered further
     # so short/quiet real utterances stop being discarded.
-    min_command_voiced_seconds: float = 0.12
+    min_command_voiced_seconds: float = 0.08
     # ...but a threshold that low also waves through key presses and room
     # bumps, which is how Whisper ended up transcribing pure silence every
     # ~10s. VAD makes the actual speech/not-speech call; the shortest real
