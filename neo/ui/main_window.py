@@ -34,8 +34,8 @@ from ..voice.tts import TextToSpeech, TTSUnavailableError, strip_speech_noise
 from ..voice.wake_word import WakeWordListener, WakeWordUnavailableError
 from .chat_view import ChatView
 from .icon import build_app_icon
+from .neuro_visual import NeuroVisual
 from .stats_panel import StatsPanel
-from .status_orb import StatusOrb
 from .theme import DARK_QSS
 
 logger = logging.getLogger(__name__)
@@ -89,6 +89,9 @@ STATE_LABELS = {
 
 
 class MainWindow(QMainWindow):
+    _LEFT_PANEL_COMPACT_WIDTH = 340
+    _LEFT_PANEL_FOCUS_WIDTH = 520
+
     def __init__(
         self,
         agent: Agent,
@@ -115,12 +118,16 @@ class MainWindow(QMainWindow):
         self._enrolling = False
         self._speaking = False
         self._quitting = False
+        self._voice_phase = 0.0
+        self._voice_timer = QTimer(self)
+        self._voice_timer.setInterval(33)
+        self._voice_timer.timeout.connect(self._update_voice_visual)
         self._tray_notice_shown = False
         self._tray: QSystemTrayIcon | None = None
         self._app_icon = build_app_icon()
         self.setWindowTitle("NEO")
         self.setWindowIcon(self._app_icon)
-        self.resize(520, 720)
+        self._apply_window_size()
         self.setStyleSheet(DARK_QSS)
         self._build_ui()
         self._build_tray_icon()
@@ -136,19 +143,69 @@ class MainWindow(QMainWindow):
         # DIY uygulaması yanlış tetiklenmeye açık, push-to-talk daha güvenilir.
         # Kullanıcı isterse anahtarla açabilir.
 
+    def _apply_window_size(self) -> None:
+        """Big and roomy -- "windowed fullscreen", not a cramped popup --
+        but sized off the actual screen instead of a fixed constant so it
+        still fits on a small laptop display."""
+        screen = QApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen is not None else None
+        if geo is not None:
+            width = max(1080, min(1440, int(geo.width() * 0.8)))
+            height = max(760, min(980, int(geo.height() * 0.82)))
+        else:
+            width, height = 1200, 820
+        self.setMinimumSize(1000, 680)
+        self.resize(width, height)
+
     def _build_ui(self) -> None:
         root = QWidget()
-        layout = QVBoxLayout(root)
-        layout.setContentsMargins(20, 18, 20, 18)
+        root_layout = QHBoxLayout(root)
+        root_layout.setContentsMargins(20, 18, 20, 18)
+        root_layout.setSpacing(18)
+
+        # -- left: brand mark, neural activity visual, live stats, controls --
+        self._left_panel = left_panel = QWidget()
+        left_panel.setObjectName("LeftPanel")
+        left_panel.setFixedWidth(self._LEFT_PANEL_COMPACT_WIDTH)
+        layout = QVBoxLayout(left_panel)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
+
+        # Wraps left_panel so it can be centered in the window once the chat
+        # panel is collapsed (see _on_chat_toggle_clicked) -- with stretch
+        # on both sides, the neural visual becomes the room's centerpiece
+        # instead of staying pinned to the left edge. Both side stretches
+        # start at 0 (left_panel just sits at its natural width) and are
+        # switched to equal positive values to center it once there's extra
+        # room to distribute.
+        self._left_wrap = QWidget()
+        self._left_wrap_layout = QHBoxLayout(self._left_wrap)
+        self._left_wrap_layout.setContentsMargins(0, 0, 0, 0)
+        self._left_wrap_layout.addStretch(0)
+        self._left_wrap_layout.addWidget(left_panel)
+        self._left_wrap_layout.addStretch(0)
 
         header_row = QHBoxLayout()
         header_row.addStretch(1)
+        title_col = QVBoxLayout()
+        title_col.setSpacing(0)
         title = QLabel("N E O")
         title.setObjectName("TitleLabel")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_row.addWidget(title)
+        title_col.addWidget(title)
+        subtitle = QLabel("KİŞİSEL YAPAY ZEKA ASİSTANI")
+        subtitle.setObjectName("SubtitleLabel")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_col.addWidget(subtitle)
+        header_row.addLayout(title_col)
         header_row.addStretch(1)
+        self._chat_toggle_button = QPushButton("💬")
+        self._chat_toggle_button.setObjectName("InfoButton")
+        self._chat_toggle_button.setCheckable(True)
+        self._chat_toggle_button.setChecked(False)
+        self._chat_toggle_button.setToolTip("Sohbet panelini göster/gizle")
+        self._chat_toggle_button.clicked.connect(self._on_chat_toggle_clicked)
+        header_row.addWidget(self._chat_toggle_button, alignment=Qt.AlignmentFlag.AlignRight)
         info_button = QPushButton("ℹ")
         info_button.setObjectName("InfoButton")
         info_button.setToolTip("NEO hakkında")
@@ -159,7 +216,7 @@ class MainWindow(QMainWindow):
         orb_col = QVBoxLayout()
         orb_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
         orb_col.setSpacing(6)
-        self._status_orb = StatusOrb()
+        self._status_orb = NeuroVisual()
         orb_col.addWidget(self._status_orb, alignment=Qt.AlignmentFlag.AlignCenter)
         self._status_label = QLabel()
         self._status_label.setObjectName("StatusLabel")
@@ -191,6 +248,7 @@ class MainWindow(QMainWindow):
         enroll_row = QHBoxLayout()
         self._enroll_label = QLabel()
         self._enroll_label.setObjectName("StatusLabel")
+        self._enroll_label.setWordWrap(True)
         enroll_row.addWidget(self._enroll_label, stretch=1)
         self._enroll_button = QPushButton("🎓 Neo'yu öğret")
         self._enroll_button.setToolTip(
@@ -231,11 +289,20 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self._update_button)
 
         layout.addWidget(control_panel)
+        layout.addStretch(1)
         self._update_enroll_label()
         self._update_wake_toggle_label()
 
+        root_layout.addWidget(self._left_wrap)
+
+        # -- right: conversation -----------------------------------------
+        self._right_panel = right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(12)
+
         self._chat_view = ChatView()
-        layout.addWidget(self._chat_view, stretch=1)
+        right_layout.addWidget(self._chat_view, stretch=1)
 
         input_row = QHBoxLayout()
         self._input = QLineEdit()
@@ -251,10 +318,33 @@ class MainWindow(QMainWindow):
         input_row.addWidget(self._mic_button)
         input_row.addWidget(self._input, stretch=1)
         input_row.addWidget(send_button)
-        layout.addLayout(input_row)
+        right_layout.addLayout(input_row)
+
+        self._root_layout = root_layout
+        root_layout.addWidget(right_panel, stretch=1)
 
         self.setCentralWidget(root)
         self._append("NEO", "Merhaba, dinliyorum.")
+        # Starts focused on the neural visual -- the "ana odak" -- with the
+        # transcript a click away rather than always sharing the window.
+        self._on_chat_toggle_clicked()
+
+    def _on_chat_toggle_clicked(self) -> None:
+        """Collapses the conversation column so the neural visual becomes
+        the window's main focus instead of sharing space with chat -- for
+        when the user wants to just watch NEO "think" (or is mid voice
+        conversation and doesn't need the transcript on screen)."""
+        show_chat = self._chat_toggle_button.isChecked()
+        self._right_panel.setVisible(show_chat)
+        self._root_layout.setStretchFactor(self._right_panel, 1 if show_chat else 0)
+        self._root_layout.setStretchFactor(self._left_wrap, 0 if show_chat else 1)
+        stretch = 0 if show_chat else 1
+        self._left_wrap_layout.setStretch(0, stretch)
+        self._left_wrap_layout.setStretch(2, stretch)
+        self._left_panel.setFixedWidth(
+            self._LEFT_PANEL_COMPACT_WIDTH if show_chat else self._LEFT_PANEL_FOCUS_WIDTH
+        )
+        self._status_orb.set_focus(not show_chat)
 
     def _on_info_clicked(self) -> None:
         # QMessageBox.about() calls exec() internally, which spins a nested
@@ -361,6 +451,25 @@ class MainWindow(QMainWindow):
     def _set_state(self, state: AgentState) -> None:
         self._status_orb.set_state(state)
         self._status_label.setText(STATE_LABELS[state])
+        if state == AgentState.SPEAKING:
+            self._voice_phase = 0.0
+            self._voice_timer.start()
+        else:
+            self._voice_timer.stop()
+            self._status_orb.set_audio_level(0.0)
+
+    def _update_voice_visual(self) -> None:
+        """Generate a speech-like amplitude envelope and feed it to the orb."""
+        import math as _m, random as _r
+        # Sentence envelope (slow) × syllable pulse (fast) × noise
+        self._voice_phase += 0.033
+        p = self._voice_phase
+        level = (
+            (0.55 + 0.45 * _m.sin(p * 1.3)) *      # sentence envelope
+            (0.50 + 0.50 * abs(_m.sin(p * 8.7))) *  # syllable pulses
+            _r.uniform(0.70, 1.00)                   # breath noise
+        )
+        self._status_orb.set_audio_level(float(level))
 
     def _release_idle_resources(self) -> None:
         # Never unload mid-conversation or while continuous listening is on.

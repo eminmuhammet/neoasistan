@@ -195,6 +195,8 @@ class NeuroVisual(QWidget):
         self._breathe_phase = 0.0
         self._breathe       = 0.5
         self._time          = 0.0
+        self._audio_level        = 0.0   # raw input 0-1, set externally
+        self._audio_level_smooth = 0.0   # smoothed for rendering
 
         self._pdata = _ParticleData(_N_SPHERE, _N_STARS)
 
@@ -214,6 +216,13 @@ class NeuroVisual(QWidget):
     def set_state(self, state: AgentState) -> None:
         self._state = state
         self._timer.setInterval(_STATE_TICK_MS[state])
+        if state != AgentState.SPEAKING:
+            self._audio_level = 0.0
+
+    def set_audio_level(self, level: float) -> None:
+        """Drive the sphere's voice-reactivity (0.0 = silence, 1.0 = loud).
+        Call repeatedly while SPEAKING; resets automatically on state change."""
+        self._audio_level = max(0.0, min(1.0, float(level)))
 
     # ── Animation ─────────────────────────────────────────────────────────
     def _tick(self) -> None:
@@ -227,6 +236,11 @@ class NeuroVisual(QWidget):
         target_sat = _STATE_SAT[self._state]
         self._hue  += (target_hue - self._hue) * 0.06
         self._sat  += (target_sat - self._sat) * 0.06
+
+        # Smooth audio level — fast attack (0.4), slow release (0.12)
+        target = self._audio_level
+        alpha  = 0.40 if target > self._audio_level_smooth else 0.12
+        self._audio_level_smooth += (target - self._audio_level_smooth) * alpha
 
         self.update()
 
@@ -254,8 +268,11 @@ class NeuroVisual(QWidget):
         ], dtype=np.float32)
 
     def _render_frame(self, W: int, H: int) -> QImage:
-        pd     = self._pdata
-        breath = 0.97 + 0.06 * self._breathe
+        pd    = self._pdata
+        av    = self._audio_level_smooth            # 0-1 voice reactivity
+        # breath: base oscillation + voice-reactive swell (SPEAKING only)
+        voice_swell = av * 0.18 if self._state == AgentState.SPEAKING else 0.0
+        breath = 0.97 + 0.06 * self._breathe + voice_swell
 
         # ── Project sphere particles ──────────────────────────────────────
         R    = self._rotation_matrix()
@@ -267,12 +284,13 @@ class NeuroVisual(QWidget):
         px = (pos[:, 0] * psc * _CLIP_SCALE * cx + cx).astype(np.int32)
         py = ((-pos[:, 1]) * psc * _CLIP_SCALE * cy + cy).astype(np.int32)
 
-        # Per-particle alpha: depth + twinkle + size
+        # Per-particle alpha: depth + twinkle + size + voice boost
         tw    = 0.5 + 0.5 * np.sin(self._time * 2.4 + pd.sphere_phases)
         alpha = (0.45 + 0.55 * depth) * (0.55 + 0.45 * tw) * (pd.sphere_sizes / 3.5)
+        alpha *= (1.0 + 0.7 * av)   # voice level brightens all particles
 
         # Colours (HSV depth-modulated value)
-        val  = np.clip(0.65 + 0.35 * depth, 0.0, 1.0).astype(np.float32)
+        val  = np.clip(0.65 + 0.35 * depth + 0.15 * av, 0.0, 1.0).astype(np.float32)
         rgb  = _hsv_to_rgb(self._hue % 1.0, self._sat, val)  # (N, 3)
         weighted = rgb * alpha[:, None]                        # (N, 3)
 
@@ -307,7 +325,8 @@ class NeuroVisual(QWidget):
         r_bloom = max(14, int(W_w * 0.07))         # ~32px wide bloom
         g2 = _gauss_blur(buf, r_bloom)
 
-        result = np.clip(_BG + g1 * 18.0 + g2 * 1.8, 0.0, 1.0)
+        glow_mult = 18.0 + 14.0 * av
+        result = np.clip(_BG + g1 * glow_mult + g2 * (1.8 + 2.0 * av), 0.0, 1.0)
 
         # ── Convert to QImage ─────────────────────────────────────────────
         rgb8  = (result * 255.0).astype(np.uint8)
