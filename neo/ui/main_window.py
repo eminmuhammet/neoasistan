@@ -166,150 +166,87 @@ class MainWindow(QMainWindow):
         self.resize(width, height)
 
     def _build_ui(self) -> None:
-        # Outer: VBox — content row on top, stats footer at bottom
         outer = QWidget()
         outer_layout = QVBoxLayout(outer)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
-        # ── Content row ───────────────────────────────────────────────────
-        content = QWidget()
-        root = content
-        root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(20, 18, 20, 12)
-        root_layout.setSpacing(18)
+        # ── Header bar (full width) ───────────────────────────────────────
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(28, 14, 28, 8)
+        header_layout.setSpacing(10)
 
-        # -- left: brand mark, neural activity visual, controls --
-        self._left_panel = left_panel = QWidget()
-        left_panel.setObjectName("LeftPanel")
-        left_panel.setFixedWidth(self._LEFT_PANEL_COMPACT_WIDTH)
-        layout = QVBoxLayout(left_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
-
-        # Wraps left_panel so it can be centered in the window once the chat
-        # panel is collapsed (see _on_chat_toggle_clicked) -- with stretch
-        # on both sides, the neural visual becomes the room's centerpiece
-        # instead of staying pinned to the left edge. Both side stretches
-        # start at 0 (left_panel just sits at its natural width) and are
-        # switched to equal positive values to center it once there's extra
-        # room to distribute.
-        self._left_wrap = QWidget()
-        self._left_wrap_layout = QHBoxLayout(self._left_wrap)
-        self._left_wrap_layout.setContentsMargins(0, 0, 0, 0)
-        self._left_wrap_layout.addStretch(0)
-        self._left_wrap_layout.addWidget(left_panel)
-        self._left_wrap_layout.addStretch(0)
-
-        header_row = QHBoxLayout()
-        header_row.addStretch(1)
         title_col = QVBoxLayout()
-        title_col.setSpacing(0)
+        title_col.setSpacing(1)
         title = QLabel("N E O")
         title.setObjectName("TitleLabel")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_col.addWidget(title)
         subtitle = QLabel("KİŞİSEL YAPAY ZEKA ASİSTANI")
         subtitle.setObjectName("SubtitleLabel")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_col.addWidget(title)
         title_col.addWidget(subtitle)
-        header_row.addLayout(title_col)
-        header_row.addStretch(1)
+
+        header_layout.addStretch(1)
+        header_layout.addLayout(title_col)
+        header_layout.addStretch(1)
         self._chat_toggle_button = QPushButton("💬")
         self._chat_toggle_button.setObjectName("InfoButton")
         self._chat_toggle_button.setCheckable(True)
         self._chat_toggle_button.setChecked(False)
         self._chat_toggle_button.setToolTip("Sohbet panelini göster/gizle")
         self._chat_toggle_button.clicked.connect(self._on_chat_toggle_clicked)
-        header_row.addWidget(self._chat_toggle_button, alignment=Qt.AlignmentFlag.AlignRight)
         info_button = QPushButton("ℹ")
         info_button.setObjectName("InfoButton")
         info_button.setToolTip("NEO hakkında")
         info_button.clicked.connect(self._on_info_clicked)
-        header_row.addWidget(info_button, alignment=Qt.AlignmentFlag.AlignRight)
-        layout.addLayout(header_row)
+        header_layout.addWidget(self._chat_toggle_button)
+        header_layout.addWidget(info_button)
+        outer_layout.addWidget(header)
 
-        orb_col = QVBoxLayout()
-        orb_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        orb_col.setSpacing(6)
+        # ── Content row: [left filler] [sphere] [chat panel] ─────────────
+        content = QWidget()
+        self._root_layout = content_layout = QHBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        # Left filler — balances sphere centre when chat is hidden
+        self._left_filler = QWidget()
+        content_layout.addWidget(self._left_filler, stretch=1)
+
+        # Sphere column (always focus-size, always centred)
+        sphere_col = QWidget()
+        self._left_panel = sphere_col          # kept for compat refs
+        sphere_col_layout = QVBoxLayout(sphere_col)
+        sphere_col_layout.setContentsMargins(0, 0, 0, 0)
+        sphere_col_layout.setSpacing(8)
+        sphere_col_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self._status_orb = NeuroVisual()
-        orb_col.addWidget(self._status_orb, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._status_orb.set_focus(True)       # always 460 px
+        sphere_col_layout.addWidget(self._status_orb, alignment=Qt.AlignmentFlag.AlignCenter)
+
         self._status_label = QLabel()
         self._status_label.setObjectName("StatusLabel")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        orb_col.addWidget(self._status_label)
+        sphere_col_layout.addWidget(self._status_label)
+
         self._research_label = QLabel()
         self._research_label.setObjectName("ResearchLabel")
         self._research_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._research_label.hide()
-        orb_col.addWidget(self._research_label)
-        layout.addLayout(orb_col)
+        sphere_col_layout.addWidget(self._research_label)
 
-        control_panel = QWidget()
-        control_panel.setObjectName("ControlPanel")
-        control_layout = QVBoxLayout(control_panel)
-        control_layout.setContentsMargins(12, 10, 12, 10)
-        control_layout.setSpacing(8)
+        content_layout.addWidget(sphere_col, stretch=0)
 
-        enroll_row = QHBoxLayout()
-        self._enroll_label = QLabel()
-        self._enroll_label.setObjectName("StatusLabel")
-        self._enroll_label.setWordWrap(True)
-        enroll_row.addWidget(self._enroll_label, stretch=1)
-        self._enroll_button = QPushButton("🎓 Neo'yu öğret")
-        self._enroll_button.setToolTip(
-            f"Uyandırma ifadesini {ENROLLMENT_SAMPLES} kez kaydederek sesini öğretir"
-        )
-        self._enroll_button.clicked.connect(self._on_enroll_clicked)
-        self._enroll_button.setEnabled(self._spotter is not None)
-        enroll_row.addWidget(self._enroll_button)
-        control_layout.addLayout(enroll_row)
-
-        toggle_row = QHBoxLayout()
-        self._wake_toggle = QPushButton()
-        self._wake_toggle.setCheckable(True)
-        self._wake_toggle.clicked.connect(self._on_wake_toggle_clicked)
-        toggle_row.addWidget(self._wake_toggle, stretch=1)
-        stop_button = QPushButton("⏹ Durdur")
-        stop_button.setObjectName("StopButton")
-        stop_button.setToolTip("Konuşmayı ve işlemeyi hemen durdur")
-        stop_button.clicked.connect(self._on_stop_clicked)
-        toggle_row.addWidget(stop_button)
-        control_layout.addLayout(toggle_row)
-
-        self._autostart_toggle = QPushButton()
-        self._autostart_toggle.setCheckable(True)
-        self._autostart_toggle.setToolTip(
-            "Windows açıldığında NEO'yu otomatik başlatır (sadece bu kullanıcı için)"
-        )
-        self._autostart_toggle.clicked.connect(self._on_autostart_toggle_clicked)
-        control_layout.addWidget(self._autostart_toggle)
-        self._update_autostart_label()
-
-        # Stays hidden until a check actually finds a newer version, so the
-        # panel doesn't carry a button that does nothing most of the time.
-        self._update_button = QPushButton()
-        self._update_button.setObjectName("UpdateButton")
-        self._update_button.clicked.connect(self._on_update_clicked)
-        self._update_button.hide()
-        control_layout.addWidget(self._update_button)
-
-        layout.addWidget(control_panel)
-        layout.addStretch(1)
-        self._update_enroll_label()
-        self._update_wake_toggle_label()
-
-        root_layout.addWidget(self._left_wrap)
-
-        # -- right: conversation -----------------------------------------
+        # Right: chat panel (hidden by default)
         self._right_panel = right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setContentsMargins(12, 0, 20, 0)
         right_layout.setSpacing(12)
-
         self._chat_view = ChatView()
         right_layout.addWidget(self._chat_view, stretch=1)
-
         input_row = QHBoxLayout()
         self._input = QLineEdit()
         self._input.setPlaceholderText("NEO'ya bir şey söyle...")
@@ -325,47 +262,92 @@ class MainWindow(QMainWindow):
         input_row.addWidget(self._input, stretch=1)
         input_row.addWidget(send_button)
         right_layout.addLayout(input_row)
-
-        self._root_layout = root_layout
-        root_layout.addWidget(right_panel, stretch=1)
+        right_panel.hide()
+        content_layout.addWidget(right_panel, stretch=1)
 
         outer_layout.addWidget(content, stretch=1)
 
-        # ── Stats footer — full width ─────────────────────────────────────
+        # ── Control bar (full width, all controls in one horizontal row) ──
+        control_bar = QWidget()
+        control_bar.setObjectName("ControlPanel")
+        ctrl = QHBoxLayout(control_bar)
+        ctrl.setContentsMargins(28, 10, 28, 10)
+        ctrl.setSpacing(14)
+
+        # — Wake word section —
+        self._enroll_label = QLabel()
+        self._enroll_label.setObjectName("StatusLabel")
+        self._enroll_label.setWordWrap(False)
+        ctrl.addWidget(self._enroll_label, stretch=2)
+
+        self._enroll_button = QPushButton("🎓 Neo'yu öğret")
+        self._enroll_button.setToolTip(
+            f"Uyandırma ifadesini {ENROLLMENT_SAMPLES} kez kaydederek sesini öğretir"
+        )
+        self._enroll_button.clicked.connect(self._on_enroll_clicked)
+        self._enroll_button.setEnabled(self._spotter is not None)
+        ctrl.addWidget(self._enroll_button)
+
+        ctrl.addSpacing(24)
+
+        # — Continuous listen + stop —
+        self._wake_toggle = QPushButton()
+        self._wake_toggle.setCheckable(True)
+        self._wake_toggle.clicked.connect(self._on_wake_toggle_clicked)
+        ctrl.addWidget(self._wake_toggle, stretch=2)
+
+        stop_button = QPushButton("⏹ Durdur")
+        stop_button.setObjectName("StopButton")
+        stop_button.setToolTip("Konuşmayı ve işlemeyi hemen durdur")
+        stop_button.clicked.connect(self._on_stop_clicked)
+        ctrl.addWidget(stop_button)
+
+        ctrl.addSpacing(24)
+
+        # — Autostart —
+        self._autostart_toggle = QPushButton()
+        self._autostart_toggle.setCheckable(True)
+        self._autostart_toggle.setToolTip(
+            "Windows açıldığında NEO'yu otomatik başlatır (sadece bu kullanıcı için)"
+        )
+        self._autostart_toggle.clicked.connect(self._on_autostart_toggle_clicked)
+        ctrl.addWidget(self._autostart_toggle, stretch=2)
+
+        self._update_button = QPushButton()
+        self._update_button.setObjectName("UpdateButton")
+        self._update_button.clicked.connect(self._on_update_clicked)
+        self._update_button.hide()
+        ctrl.addWidget(self._update_button)
+
+        outer_layout.addWidget(control_bar)
+
+        # ── Stats footer (full width) ─────────────────────────────────────
         stats_footer = QWidget()
         stats_footer.setObjectName("StatsFooter")
-        stats_footer_layout = QHBoxLayout(stats_footer)
-        stats_footer_layout.setContentsMargins(28, 8, 28, 10)
-        stats_footer_layout.setSpacing(0)
+        sf_layout = QHBoxLayout(stats_footer)
+        sf_layout.setContentsMargins(28, 8, 28, 10)
+        sf_layout.setSpacing(0)
         stats_panel = StatsPanel()
         stats_panel.setObjectName("StatsPanel")
-        stats_footer_layout.addStretch(1)
-        stats_footer_layout.addWidget(stats_panel)
-        stats_footer_layout.addStretch(1)
+        sf_layout.addStretch(1)
+        sf_layout.addWidget(stats_panel)
+        sf_layout.addStretch(1)
         outer_layout.addWidget(stats_footer)
+
+        self._update_enroll_label()
+        self._update_wake_toggle_label()
+        self._update_autostart_label()
 
         self.setCentralWidget(outer)
         self._append("NEO", "Merhaba, dinliyorum.")
-        # Starts focused on the neural visual -- the "ana odak" -- with the
-        # transcript a click away rather than always sharing the window.
-        self._on_chat_toggle_clicked()
 
     def _on_chat_toggle_clicked(self) -> None:
-        """Collapses the conversation column so the neural visual becomes
-        the window's main focus instead of sharing space with chat -- for
-        when the user wants to just watch NEO "think" (or is mid voice
-        conversation and doesn't need the transcript on screen)."""
+        """Show/hide the conversation column; sphere stays centred when hidden."""
         show_chat = self._chat_toggle_button.isChecked()
         self._right_panel.setVisible(show_chat)
+        # Left filler balances sphere when chat is hidden; collapses when chat shown
+        self._root_layout.setStretchFactor(self._left_filler, 0 if show_chat else 1)
         self._root_layout.setStretchFactor(self._right_panel, 1 if show_chat else 0)
-        self._root_layout.setStretchFactor(self._left_wrap, 0 if show_chat else 1)
-        stretch = 0 if show_chat else 1
-        self._left_wrap_layout.setStretch(0, stretch)
-        self._left_wrap_layout.setStretch(2, stretch)
-        self._left_panel.setFixedWidth(
-            self._LEFT_PANEL_COMPACT_WIDTH if show_chat else self._LEFT_PANEL_FOCUS_WIDTH
-        )
-        self._status_orb.set_focus(not show_chat)
 
     def _on_info_clicked(self) -> None:
         # QMessageBox.about() calls exec() internally, which spins a nested

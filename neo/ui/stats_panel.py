@@ -46,6 +46,8 @@ class StatsPanel(QWidget):
         for gauge in (self._cpu_gauge, self._ram_gauge, self._gpu_gauge):
             layout.addWidget(gauge)
 
+        self._refreshing = False   # reentrancy guard (see _schedule_refresh)
+
         self._timer = QTimer(self)
         self._timer.setInterval(REFRESH_INTERVAL_MS)
         self._timer.timeout.connect(self._schedule_refresh)
@@ -65,35 +67,45 @@ class StatsPanel(QWidget):
         super().hideEvent(event)
 
     def _schedule_refresh(self) -> None:
+        # Guard against concurrent refreshes: if the previous _refresh() coroutine
+        # hasn't finished (e.g. GPU query blocked, wake-command task is running)
+        # skip this tick rather than spawning a second task -- qasync raises
+        # "Cannot enter into task" when two tasks collide inside its event loop.
+        if self._refreshing:
+            return
+        self._refreshing = True
         asyncio.ensure_future(self._refresh())
 
     async def _refresh(self) -> None:
-        cpu = await self._cpu_tool.run()
-        if cpu.success:
-            self._cpu_gauge.set_value(cpu.data["cpu_percent"])
+        try:
+            cpu = await self._cpu_tool.run()
+            if cpu.success:
+                self._cpu_gauge.set_value(cpu.data["cpu_percent"])
 
-        ram = await self._ram_tool.run()
-        if ram.success:
-            self._ram_gauge.set_value(ram.data["percent"])
+            ram = await self._ram_tool.run()
+            if ram.success:
+                self._ram_gauge.set_value(ram.data["percent"])
 
-        own = await asyncio.to_thread(get_own_usage)
-        if own is not None:
-            self._cpu_gauge.set_extra_text(f"NEO %{own['cpu_percent']:.1f}")
-            self._ram_gauge.set_extra_text(f"NEO {own['memory_mb']:.0f}MB")
-        else:
-            # Never fill these in with a guess -- an empty slot is honest.
-            self._cpu_gauge.set_extra_text("")
-            self._ram_gauge.set_extra_text("")
+            own = await asyncio.to_thread(get_own_usage)
+            if own is not None:
+                self._cpu_gauge.set_extra_text(f"NEO %{own['cpu_percent']:.1f}")
+                self._ram_gauge.set_extra_text(f"NEO {own['memory_mb']:.0f}MB")
+            else:
+                # Never fill these in with a guess -- an empty slot is honest.
+                self._cpu_gauge.set_extra_text("")
+                self._ram_gauge.set_extra_text("")
 
-        gpu = await self._gpu_tool.run()
-        if gpu.success:
-            self._gpu_available = True
-            self._gpu_gauge.set_value(gpu.data["gpu_percent"])
-            temp = gpu.data.get("temperature_c")
-            self._gpu_gauge.set_extra_text(f"{temp}°C" if temp is not None else "")
-        elif self._gpu_available:
-            # Only flip to the "yok" state once, and never fake a number --
-            # honest > pretty here.
-            self._gpu_available = False
-            self._gpu_gauge.set_value(0)
-            self._gpu_gauge.set_extra_text("yok")
+            gpu = await self._gpu_tool.run()
+            if gpu.success:
+                self._gpu_available = True
+                self._gpu_gauge.set_value(gpu.data["gpu_percent"])
+                temp = gpu.data.get("temperature_c")
+                self._gpu_gauge.set_extra_text(f"{temp}°C" if temp is not None else "")
+            elif self._gpu_available:
+                # Only flip to the "yok" state once, and never fake a number --
+                # honest > pretty here.
+                self._gpu_available = False
+                self._gpu_gauge.set_value(0)
+                self._gpu_gauge.set_extra_text("yok")
+        finally:
+            self._refreshing = False
