@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 MAX_ATTEMPTS_PER_STEP = 2
 MAX_TASK_SECONDS = 900.0  # 15 minutes
 MAX_PLAN_STEPS = 8
+# How many times the whole remaining plan may be rewritten after a step
+# keeps failing. Bounded independently of MAX_ATTEMPTS_PER_STEP (retries of
+# the *same* step) and MAX_TASK_SECONDS (wall clock): without this, a goal
+# that's subtly impossible could get replanned forever, each attempt
+# plausible-looking but never actually landing.
+MAX_REPLANS = 2
 
 ProgressCallback = Callable[[Task], None]
 
@@ -79,6 +85,52 @@ _PLANNING_SYSTEM_PROMPT = (
     "vermen yeterli. Cevabını SADECE submit_plan aracıyla ver."
 )
 
+_REPLAN_TOOL = {
+    "name": "submit_replan",
+    "description": (
+        "Başarısız olan bir adımdan sonra, hedefe farklı bir yoldan "
+        "ulaşmanın mümkün olup olmadığına karar verir."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "give_up": {
+                "type": "boolean",
+                "description": (
+                    "Hedefe bu koşullar altında ulaşmanın gerçekten mümkün "
+                    "olmadığı düşünülüyorsa true."
+                ),
+            },
+            "steps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"description": {"type": "string"}},
+                    "required": ["description"],
+                },
+                "description": (
+                    "give_up false ise, başarısız adımın yerini alacak ve "
+                    "hedefe ulaşmayı deneyecek yeni adım(lar)."
+                ),
+            },
+        },
+        "required": ["give_up"],
+    },
+}
+
+_REPLAN_SYSTEM_PROMPT = (
+    "Sen NEO'nun görev planlayıcısısın. Bir görev adımı başarısız oldu ve "
+    "yeniden denenmesi de işe yaramadı. Sana genel hedefi, şimdiye kadar "
+    "tamamlanan adımları, başarısız olan adımı, neden başarısız olduğunu ve "
+    "eski plandaki artık geçersiz sayılan kalan adımları vereceğim. Görevi "
+    "bırakmadan önce farklı bir yaklaşımla hedefe ulaşmanın bir yolu olup "
+    "olmadığını düşün -- aynı hatayı tekrarlayacak bir adım önerme. Varsa, "
+    f"en fazla {MAX_PLAN_STEPS} yeni adımdan oluşan bir plan öner. Gerçekten "
+    "bir yol yoksa (ör. gerekli bir izin/veri hiç yok, ya da bir araç kalıcı "
+    "olarak kullanılamıyor) give_up=true ile bildir; iyimser olma. Cevabını "
+    "SADECE submit_replan aracıyla ver."
+)
+
 _VERIFY_SYSTEM_PROMPT = (
     "Sen bir görev adımının sonucunu değerlendiren bağımsız bir "
     "denetleyicisin. Sana adımın amacı, o adımda gerçekten çalıştırılan "
@@ -99,13 +151,11 @@ class TaskPlanner:
     checks an ordinary message would), and checks the actual result against
     what the step was supposed to accomplish before moving on.
 
-    Deliberately does not revise the remaining plan on a step failure in
-    this version -- a failed step (after its retries) stops the task and
-    reports what was and wasn't accomplished. Rewriting the remaining steps
-    around a failure is a real refinement the plan calls out as a nice
-    to have ("gerekirse planı revize eder"), but doing that safely needs
-    its own care and is left for a follow-up rather than half-implemented
-    here.
+    A step that still fails after its retries doesn't immediately end the
+    task: the remaining plan gets rewritten around the failure (see
+    _replan) up to MAX_REPLANS times, so "gör → düşün → planla → uygula →
+    doğrula → **planı revize et** → devam et" is the actual loop, not just
+    plan-once-and-retry.
     """
 
     def __init__(
@@ -139,9 +189,14 @@ class TaskPlanner:
 
         completed_summaries: list[str] = []
         deadline = time.monotonic() + MAX_TASK_SECONDS
-        task = await asyncio.to_thread(self._task_store.get_task, task_id)
+        replans_used = 0
 
-        for step in task.steps:
+        while True:
+            task = await asyncio.to_thread(self._task_store.get_task, task_id)
+            step = next((s for s in task.steps if s.status == "pending"), None)
+            if step is None:
+                break
+
             if time.monotonic() > deadline:
                 await asyncio.to_thread(
                     self._task_store.update_step, step.id, status="failed", result_summary="Zaman aşımı"
@@ -157,18 +212,49 @@ class TaskPlanner:
 
             success, summary = await self._execute_step(goal, completed_summaries, step)
 
-            if not success:
+            if success:
                 await asyncio.to_thread(
-                    self._task_store.update_step, step.id, status="failed", result_summary=summary
+                    self._task_store.update_step, step.id, status="done", result_summary=summary
                 )
+                completed_summaries.append(summary)
+                await self._notify(task_id)
+                continue
+
+            await asyncio.to_thread(
+                self._task_store.update_step, step.id, status="failed", result_summary=summary
+            )
+            await self._notify(task_id)
+
+            if replans_used >= MAX_REPLANS:
                 await asyncio.to_thread(self._task_store.update_task_status, task_id, "failed")
                 await self._notify(task_id)
                 return False, self._final_summary(goal, completed_summaries, summary)
 
-            await asyncio.to_thread(
-                self._task_store.update_step, step.id, status="done", result_summary=summary
-            )
-            completed_summaries.append(summary)
+            remaining = [s for s in task.steps if s.status == "pending" and s.id != step.id]
+            try:
+                give_up, new_descriptions = await self._replan(
+                    goal, completed_summaries, step.description, summary,
+                    [s.description for s in remaining],
+                )
+            except LLMRequestError:
+                give_up, new_descriptions = True, []
+
+            if give_up or not new_descriptions:
+                await asyncio.to_thread(self._task_store.update_task_status, task_id, "failed")
+                await self._notify(task_id)
+                return False, self._final_summary(goal, completed_summaries, summary)
+
+            replans_used += 1
+            # The old remaining plan is superseded, not merely postponed --
+            # left "pending" they'd still be picked up (in their original,
+            # now-stale position order) once the new steps finished.
+            for old_step in remaining:
+                await asyncio.to_thread(self._task_store.update_step, old_step.id, status="skipped")
+
+            next_position = max((s.position for s in task.steps), default=-1) + 1
+            for description in new_descriptions:
+                await asyncio.to_thread(self._task_store.add_step, task_id, next_position, description)
+                next_position += 1
             await self._notify(task_id)
 
         await asyncio.to_thread(self._task_store.update_task_status, task_id, "done")
@@ -239,6 +325,47 @@ class TaskPlanner:
         # something that couldn't actually be parsed.
         logger.warning("Doğrulama yanıtı ayrıştırılamadı, adım başarısız sayılıyor")
         return False, "Doğrulama yanıtı anlaşılamadı."
+
+    async def _replan(
+        self,
+        goal: str,
+        prior_summaries: list[str],
+        failed_description: str,
+        failure_reason: str,
+        remaining_descriptions: list[str],
+    ) -> tuple[bool, list[str]]:
+        """Asks whether a different approach could still reach the goal
+        after a step exhausted its retries. Returns (give_up, new_steps) --
+        give_up=True (or an empty step list) both mean "stop the task",
+        the caller doesn't need to distinguish which."""
+        done = "\n".join(f"- {s}" for s in prior_summaries) if prior_summaries else "(henüz yok)"
+        remaining = (
+            "\n".join(f"- {d}" for d in remaining_descriptions)
+            if remaining_descriptions else "(kalan adım yok)"
+        )
+        prompt = (
+            f"Genel hedef: {goal}\n\n"
+            f"Şimdiye kadar tamamlanan adımlar:\n{done}\n\n"
+            f"Başarısız olan adım: {failed_description}\n"
+            f"Başarısızlık nedeni: {failure_reason}\n\n"
+            f"Eski plandaki, artık geçersiz sayılan kalan adımlar:\n{remaining}\n\n"
+            "Hedefe farklı bir yoldan ulaşmanın bir yolu var mı?"
+        )
+        messages = [{"role": "user", "content": prompt}]
+        response = await self._agent.raw_llm_call(
+            messages, _REPLAN_SYSTEM_PROMPT, [_REPLAN_TOOL], 1024
+        )
+        for block in response.content:
+            if block.type == "tool_use" and block.name == "submit_replan":
+                if block.input.get("give_up"):
+                    return True, []
+                steps = block.input.get("steps", [])
+                descriptions = [s["description"] for s in steps if s.get("description")]
+                return False, descriptions[:MAX_PLAN_STEPS]
+        # Claude didn't call the forced tool -- give up conservatively
+        # rather than looping on an unparseable response.
+        logger.warning("Yeniden planlama yanıtı ayrıştırılamadı, görev durduruluyor")
+        return True, []
 
     def _render_tool_trace(self, tool_calls: list[dict]) -> str:
         """Real evidence for the verifier -- without this, verification was

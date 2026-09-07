@@ -15,7 +15,7 @@ import pytest
 
 from neo.core.agent import SubtaskResult
 from neo.core.llm_client import LLMRequestError
-from neo.core.planner import MAX_ATTEMPTS_PER_STEP, MAX_TASK_SECONDS, TaskPlanner
+from neo.core.planner import MAX_ATTEMPTS_PER_STEP, MAX_REPLANS, MAX_TASK_SECONDS, TaskPlanner
 from neo.memory.task_store import TaskStore
 
 
@@ -33,13 +33,17 @@ class FakeMessage:
 
 
 class FakeAgent:
-    def __init__(self, plan_steps, verify_results, subtask_results):
+    def __init__(self, plan_steps, verify_results, subtask_results, replan_results=None):
         """plan_steps: list[str] or None (None simulates Claude not calling
         the forced plan tool at all). verify_results/subtask_results are
-        popped in call order across the whole run."""
+        popped in call order across the whole run. replan_results: list of
+        (give_up, new_step_descriptions) popped each time a step exhausts
+        its retries; defaults to always giving up, so tests that don't care
+        about replanning keep their old "fail immediately" behavior."""
         self._plan_steps = plan_steps
         self._verify_results = list(verify_results)
         self._subtask_results = list(subtask_results)
+        self._replan_results = list(replan_results) if replan_results is not None else None
         self.subtask_calls: list[tuple[str, str]] = []
         self.raw_call_count = 0
 
@@ -63,6 +67,24 @@ class FakeAgent:
                         type="tool_use",
                         name="submit_verification",
                         input={"success": success, "reason": reason},
+                    )
+                ]
+            )
+
+        if tool_name == "submit_replan":
+            if self._replan_results is None:
+                give_up, new_steps = True, []
+            else:
+                give_up, new_steps = self._replan_results.pop(0)
+            return FakeMessage(
+                [
+                    FakeBlock(
+                        type="tool_use",
+                        name="submit_replan",
+                        input={
+                            "give_up": give_up,
+                            "steps": [{"description": d} for d in new_steps],
+                        },
                     )
                 ]
             )
@@ -194,6 +216,119 @@ def test_retries_never_exceed_the_configured_maximum(tmp_path):
     asyncio.run(planner.run("Hedef"))
 
     assert len(agent.subtask_calls) == MAX_ATTEMPTS_PER_STEP
+
+
+# -- replanning ---------------------------------------------------------------
+
+
+def test_a_replanned_step_can_still_complete_the_task(tmp_path):
+    """A step that exhausts its retries doesn't have to end the task --
+    the remaining plan can be rewritten around the failure and the task
+    still succeeds."""
+    agent = FakeAgent(
+        plan_steps=["imkansız adım", "eski ikinci adım"],
+        verify_results=[(False, "olmadı")] * MAX_ATTEMPTS_PER_STEP + [(True, "yeni yolla oldu")],
+        subtask_results=["deneme"] * MAX_ATTEMPTS_PER_STEP + ["yeni adım sonucu"],
+        replan_results=[(False, ["farklı bir yol dene"])],
+    )
+    planner, store = _planner(tmp_path, agent)
+
+    success, summary = asyncio.run(planner.run("Hedef"))
+
+    assert success is True
+    assert "yeni adım sonucu" in summary
+
+    task = store.recent_tasks()[0]
+    assert task.status == "done"
+    # Original step 1 failed, original step 2 was superseded (never run),
+    # and the replanned step actually ran and completed.
+    statuses = [s.status for s in task.steps]
+    assert statuses.count("failed") == 1
+    assert statuses.count("skipped") == 1
+    assert statuses.count("done") == 1
+
+
+def test_replan_give_up_stops_the_task_without_touching_remaining_steps(tmp_path):
+    agent = FakeAgent(
+        plan_steps=["imkansız adım", "eski ikinci adım"],
+        verify_results=[(False, "olmadı")] * MAX_ATTEMPTS_PER_STEP,
+        subtask_results=["deneme"] * MAX_ATTEMPTS_PER_STEP,
+        replan_results=[(True, [])],
+    )
+    planner, store = _planner(tmp_path, agent)
+
+    success, summary = asyncio.run(planner.run("Hedef"))
+
+    assert success is False
+    task = store.recent_tasks()[0]
+    assert task.status == "failed"
+    assert task.steps[0].status == "failed"
+    # give_up means the task stops right there -- the old remaining plan is
+    # simply abandoned, not marked "skipped" (nothing replaced it).
+    assert task.steps[1].status == "pending"
+
+
+def test_replanning_is_bounded_by_max_replans(tmp_path):
+    """A goal that keeps failing every replan attempt must eventually give
+    up on its own, not replan forever."""
+    replan_attempts = MAX_REPLANS + 1
+    agent = FakeAgent(
+        plan_steps=["adım"],
+        verify_results=[(False, "olmadı")] * (MAX_ATTEMPTS_PER_STEP * replan_attempts),
+        subtask_results=["deneme"] * (MAX_ATTEMPTS_PER_STEP * replan_attempts),
+        replan_results=[(False, ["tekrar dene"])] * MAX_REPLANS,
+    )
+    planner, store = _planner(tmp_path, agent)
+
+    success, summary = asyncio.run(planner.run("Hedef"))
+
+    assert success is False
+    task = store.recent_tasks()[0]
+    assert task.status == "failed"
+    # MAX_REPLANS successful replans happened (each contributing one new
+    # step), plus the original step -- the last one is the one that finally
+    # exhausts the replan budget and stops the task.
+    assert len(task.steps) == MAX_REPLANS + 1
+
+
+def test_an_unparseable_replan_response_gives_up_conservatively(tmp_path):
+    class NoToolReplanAgent(FakeAgent):
+        async def raw_llm_call(self, messages, system, tools, max_tokens=1024):
+            if tools and tools[0]["name"] == "submit_replan":
+                return FakeMessage([FakeBlock(type="text", text="düz metin")])
+            return await super().raw_llm_call(messages, system, tools, max_tokens)
+
+    agent = NoToolReplanAgent(
+        plan_steps=["adım"],
+        verify_results=[(False, "olmadı")] * MAX_ATTEMPTS_PER_STEP,
+        subtask_results=["deneme"] * MAX_ATTEMPTS_PER_STEP,
+    )
+    planner, store = _planner(tmp_path, agent)
+
+    success, summary = asyncio.run(planner.run("Hedef"))
+
+    assert success is False
+    assert store.recent_tasks()[0].status == "failed"
+
+
+def test_replan_llm_failure_stops_the_task_instead_of_crashing(tmp_path):
+    class BrokenReplanAgent(FakeAgent):
+        async def raw_llm_call(self, messages, system, tools, max_tokens=1024):
+            if tools and tools[0]["name"] == "submit_replan":
+                raise LLMRequestError("API'ye ulaşılamadı")
+            return await super().raw_llm_call(messages, system, tools, max_tokens)
+
+    agent = BrokenReplanAgent(
+        plan_steps=["adım"],
+        verify_results=[(False, "olmadı")] * MAX_ATTEMPTS_PER_STEP,
+        subtask_results=["deneme"] * MAX_ATTEMPTS_PER_STEP,
+    )
+    planner, store = _planner(tmp_path, agent)
+
+    success, summary = asyncio.run(planner.run("Hedef"))
+
+    assert success is False
+    assert store.recent_tasks()[0].status == "failed"
 
 
 # -- planning failures --------------------------------------------------------
