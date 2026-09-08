@@ -83,8 +83,8 @@ _N_STARS     = 500
 # 600 px buffer was stretched to the widget's 680 px and that soft, slightly
 # smeared result was most of what looked low-resolution. Capped because blur
 # cost grows with the square of this.
-_MIN_RENDER_SIZE = 360
-_MAX_RENDER_SIZE = 900
+_MIN_RENDER_SIZE = 480
+_MAX_RENDER_SIZE = 1200
 
 # Upper end of the glow range the colour table covers. Above 1.0 so the
 # brightest cores still clip channel by channel and burn toward white.
@@ -336,7 +336,7 @@ class NeuroVisual(QWidget):
     # Blur cost is O(side^2); dropping from 680 to 600 cuts it by about a
     # fifth on top of the particle-count reduction above, in direct response
     # to reports of the animation stuttering and driving sustained GPU load.
-    _FOCUS_SIZE   = 600
+    _FOCUS_SIZE   = 700
 
     _frame_ready = Signal(QPixmap)  # emitted from render thread → main thread
 

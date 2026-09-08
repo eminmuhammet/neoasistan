@@ -70,12 +70,20 @@ QPushButton#InfoButton {
 }
 
 QPushButton#StopButton {
-    border-color: #ff4d4f;
-    color: #ff4d4f;
+    border-color: #c0392b;
+    color: #c0392b;
 }
 
 QPushButton#StopButton:hover {
-    background-color: #3a1416;
+    background-color: #2a1010;
+}
+
+QLabel#SpeechSubtitle {
+    color: #6effa8;
+    font-size: 15px;
+    font-weight: 400;
+    line-height: 1.6;
+    opacity: 0.85;
 }
 
 QLabel#TitleLabel {

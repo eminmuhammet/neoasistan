@@ -229,11 +229,6 @@ class MainWindow(QMainWindow):
         self._chat_toggle_button.setToolTip("Sohbet panelini göster/gizle")
         self._chat_toggle_button.clicked.connect(self._on_chat_toggle_clicked)
         header_layout.addWidget(self._chat_toggle_button)
-        info_button = QPushButton("ℹ")
-        info_button.setObjectName("InfoButton")
-        info_button.setToolTip("NEO hakkında")
-        info_button.clicked.connect(self._on_info_clicked)
-        header_layout.addWidget(info_button)
         outer_layout.addWidget(header)
 
         # ── Content row: [left filler] [sphere] [chat panel] ─────────────
@@ -242,8 +237,17 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
-        # Left filler — balances sphere centre when chat is hidden
+        # Left panel — subtitle area when chat is closed, balances sphere centre
         self._left_filler = QWidget()
+        left_layout = QVBoxLayout(self._left_filler)
+        left_layout.setContentsMargins(24, 0, 24, 0)
+        left_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._subtitle_label = QLabel()
+        self._subtitle_label.setObjectName("SpeechSubtitle")
+        self._subtitle_label.setWordWrap(True)
+        self._subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._subtitle_label.hide()
+        left_layout.addWidget(self._subtitle_label)
         content_layout.addWidget(self._left_filler, stretch=1)
 
         # Sphere column (always focus-size, always centred)
@@ -338,7 +342,7 @@ class MainWindow(QMainWindow):
         self._wake_toggle.clicked.connect(self._on_wake_toggle_clicked)
         ctrl.addWidget(self._wake_toggle, stretch=2)
 
-        stop_button = QPushButton("⏹ Durdur")
+        stop_button = QPushButton("Durdur")
         stop_button.setObjectName("StopButton")
         stop_button.setToolTip("Konuşmayı ve işlemeyi hemen durdur")
         stop_button.clicked.connect(self._on_stop_clicked)
@@ -403,6 +407,9 @@ class MainWindow(QMainWindow):
         self._root_layout.setStretchFactor(self._left_filler, 1)
         self._root_layout.setStretchFactor(self._right_filler, 1 if not show_chat else 0)
         self._root_layout.setStretchFactor(self._right_panel, 1 if show_chat else 0)
+        # Hide subtitle when chat opens (it's already visible in chat)
+        if show_chat:
+            self._subtitle_label.hide()
 
     def _on_info_clicked(self) -> None:
         # QMessageBox.about() calls exec() internally, which spins a nested
@@ -672,6 +679,12 @@ class MainWindow(QMainWindow):
 
     def _append(self, sender: str, text: str) -> None:
         self._chat_view.append(sender, text)
+        # Show NEO's reply as subtitle on the left when chat panel is closed
+        if sender == "NEO" and not self._chat_toggle_button.isChecked():
+            # Trim to ~200 chars so it doesn't flood the panel
+            display = text if len(text) <= 200 else text[:197] + "…"
+            self._subtitle_label.setText(display)
+            self._subtitle_label.show()
 
     # -- text chat -----------------------------------------------------
 
@@ -1050,7 +1063,6 @@ class MainWindow(QMainWindow):
         self._update_research_indicator()
 
         if self._tts is not None:
-            self._set_state(AgentState.SPEAKING)
             self._speaking = True
             try:
                 # Research-mode reports are long; only the key-points summary
@@ -1059,6 +1071,10 @@ class MainWindow(QMainWindow):
                 # above still shows them.
                 spoken = strip_speech_noise(extract_spoken_summary(reply))
                 if spoken:
+                    # Set SPEAKING state right before audio starts, not before
+                    # text processing — avoids the animation playing during the
+                    # strip/extract phase when nothing is audible yet.
+                    self._set_state(AgentState.SPEAKING)
                     await self._tts.speak(spoken)
             except TTSUnavailableError as exc:
                 self._append("NEO", str(exc))
@@ -1069,6 +1085,8 @@ class MainWindow(QMainWindow):
                 self._speaking = False
 
         self._set_state(AgentState.IDLE)
+        # Hide subtitle a moment after speech ends so the last words are readable
+        QTimer.singleShot(3000, self._subtitle_label.hide)
 
     # ── Backend integration API ────────────────────────────────────────────
 

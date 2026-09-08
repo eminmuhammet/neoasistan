@@ -41,18 +41,13 @@ def test_about_does_not_claim_a_stale_roadmap_position():
     assert "Phase" not in build_about_text()
 
 
-def test_the_info_button_is_actually_wired_into_the_header():
-    """The dialog is unreachable without the button that opens it.
-
-    The header was rebuilt for a new logo and the ℹ button was dropped in
-    the process, leaving _on_info_clicked orphaned: every test here kept
-    passing -- they all call build_about_text() directly -- while the user
-    had no way to open the dialog at all.
-    """
+def test_the_info_button_is_removed_from_header():
+    """The ℹ button was removed intentionally — the About dialog is still
+    reachable via _on_info_clicked if needed, but there is no dedicated button
+    cluttering the header anymore."""
     source = SOURCE.read_text(encoding="utf-8")
-
-    assert 'QPushButton("ℹ")' in source, "başlıkta ℹ butonu yok"
-    assert "clicked.connect(self._on_info_clicked)" in source, "ℹ butonu bağlı değil"
+    # Confirm the button is gone (not that it's present)
+    assert 'QPushButton("ℹ")' not in source, "ℹ butonu hâlâ başlıkta"
 
 
 def test_about_lists_what_neo_can_actually_do():
