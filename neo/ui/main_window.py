@@ -141,7 +141,10 @@ class MainWindow(QMainWindow):
         self._apply_window_size()
         self.setStyleSheet(DARK_QSS)
         self._build_ui()
-        self._build_tray_icon()
+        # Delay tray creation until the event loop is running — creating
+        # QSystemTrayIcon before the first event loop tick causes it to
+        # silently fail to register on some Windows configurations.
+        QTimer.singleShot(500, self._build_tray_icon)
         self._set_state(AgentState.IDLE)
 
         # The loaded speech model holds several hundred MB; drop it again
