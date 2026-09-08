@@ -29,7 +29,6 @@ from ..memory.audit_store import AuditStore
 from ..core.state import AgentState
 from ..voice.audio_features import has_enough_speech, speech_seconds
 from ..voice.chime import play_activation_chime
-from ..voice.keyword_spotter import KeywordSpotter
 from ..voice.microphone import SAMPLE_RATE as MIC_SAMPLE_RATE
 from ..voice.microphone import MicrophoneUnavailableError, PushToTalkRecorder
 from ..voice.stt import STTUnavailableError, WhisperSTT
@@ -65,7 +64,7 @@ def _expects_a_reply(text: str) -> bool:
     return stripped.endswith("?")
 
 
-def build_about_text(wake_phrase: str = "Neo uyan") -> str:
+def build_about_text(wake_phrase: str = "Hey Jarvis") -> str:
     """Assembled from the live values rather than written out by hand.
 
     The version used to be a literal "v0.1.0" in this text. After an update
@@ -78,9 +77,10 @@ def build_about_text(wake_phrase: str = "Neo uyan") -> str:
 gerisini o halleder.</p>
 
 <p><b>Sesli kontrol</b><br>
-🎙 düğmesini basılı tutup konuş, ya da "🎓 Neo'yu öğret" ile sesini
-öğretip "{wake_phrase}" diyerek uyandır. Uyandıktan sonra komutunu
-söylemen yeterli, tuşa basman gerekmez.</p>
+🎙 düğmesini basılı tutup konuş, ya da sürekli dinlemeyi açıp "{wake_phrase}"
+de ya da iki kez çırp — ikisi de öğretim gerektirmez, hazır çalışır.
+Uyandıktan sonra komutunu söylemen yeterli, tuşa basman gerekmez. NEO bir
+soru sorup cevabını beklerken de uyandırmadan otomatik dinlemeye geçer.</p>
 
 <p><b>Bilgisayarında yapabildiklerim</b><br>
 • Saat, tarih<br>
@@ -113,14 +113,6 @@ uyandırma kelimesi tamamen bilgisayarında, çevrimdışı çalışır.</p>
 
 <p style="color:#7c8b98;">Sürüm {__version__} · Emin İLHAN</p>
 """
-
-ENROLLMENT_SAMPLES = 3
-ENROLLMENT_PREPARE_SECONDS = 1.2
-ENROLLMENT_RECORD_SECONDS = 2.2
-# Long enough to yield a useful spread of "not the wake word" windows without
-# turning enrollment into a chore.
-NEGATIVE_RECORD_SECONDS = 10.0
-ENROLLMENT_MAX_RETRIES = 3
 
 # Same Whisper-hallucination guard used for the continuous wake-word command
 # capture (see neo/voice/wake_word.py) applied to push-to-talk recordings.
@@ -162,8 +154,7 @@ class MainWindow(QMainWindow):
         stt: WhisperSTT | None = None,
         tts: TextToSpeech | None = None,
         wake_listener: WakeWordListener | None = None,
-        spotter: KeywordSpotter | None = None,
-        wake_phrase: str = "Neo uyan",
+        wake_phrase: str = "Hey Jarvis",
         update_manifest_url: str | None = None,
     ) -> None:
         super().__init__()
@@ -175,10 +166,8 @@ class MainWindow(QMainWindow):
         self._stt = stt
         self._tts = tts
         self._wake_listener = wake_listener
-        self._spotter = spotter
         self._wake_task: asyncio.Task | None = None
         self._active_command_task: asyncio.Task | None = None
-        self._enrolling = False
         self._speaking = False
         self._quitting = False
         self._voice_phase = 0.0
@@ -347,19 +336,14 @@ class MainWindow(QMainWindow):
         ctrl.setContentsMargins(28, 10, 28, 10)
         ctrl.setSpacing(14)
 
-        # — Wake word section —
+        # — Wake word section — no enrollment needed: "Hey Jarvis" is a
+        # pretrained neural detector and the double clap needs no training
+        # either, so there is nothing here to teach or configure.
         self._enroll_label = QLabel()
         self._enroll_label.setObjectName("StatusLabel")
         self._enroll_label.setWordWrap(False)
+        self._enroll_label.setText(f"Uyandırma: \"{self._wake_phrase}\" ya da çift alkış")
         ctrl.addWidget(self._enroll_label, stretch=2)
-
-        self._enroll_button = QPushButton("🎓 Neo'yu öğret")
-        self._enroll_button.setToolTip(
-            f"Uyandırma ifadesini {ENROLLMENT_SAMPLES} kez kaydederek sesini öğretir"
-        )
-        self._enroll_button.clicked.connect(self._on_enroll_clicked)
-        self._enroll_button.setEnabled(self._spotter is not None)
-        ctrl.addWidget(self._enroll_button)
 
         ctrl.addSpacing(24)
 
@@ -419,7 +403,6 @@ class MainWindow(QMainWindow):
         sf_layout.addStretch(1)
         outer_layout.addWidget(stats_footer)
 
-        self._update_enroll_label()
         self._update_wake_toggle_label()
         self._update_autostart_label()
 
@@ -835,180 +818,21 @@ class MainWindow(QMainWindow):
 
         await self._handle_recognized_text(text)
 
-    # -- wake word enrollment ("Neo'yu öğret") ------------------------------
-
-    def _update_enroll_label(self) -> None:
-        if self._spotter is None:
-            self._enroll_label.setText("Uyandırma kelimesi: kullanılamıyor")
-            return
-        count = self._spotter.template_count
-        if count >= ENROLLMENT_SAMPLES:
-            # "Not calibrated" covers two different situations and the fix
-            # differs, so say which one it is rather than making the user
-            # guess why NEO keeps waking up.
-            if self._spotter.is_calibrated:
-                suffix = f" — ayrışma {self._spotter.separation:.1f}"
-            elif self._spotter.negative_count == 0:
-                suffix = " — kalibrasyon örneği yok"
-            else:
-                suffix = " — ayrışma zayıf, tekrar öğret"
-            self._enroll_label.setText(f"'{self._wake_phrase}' öğretildi ({count} örnek){suffix}")
-        else:
-            self._enroll_label.setText(
-                f"'{self._wake_phrase}' öğretilmedi ({count}/{ENROLLMENT_SAMPLES})"
-            )
-
-    def _on_enroll_clicked(self) -> None:
-        if self._spotter is None or self._enrolling or self._recorder is None:
-            return
-        asyncio.ensure_future(self._run_enrollment())
-
-    async def _run_enrollment(self) -> None:
-        self._enrolling = True
-        self._enroll_button.setEnabled(False)
-        if self._wake_task is not None:
-            self._stop_wake_loop()
-        try:
-            # Start from nothing: enrolling on top of earlier takes silently
-            # mixes two different phrases into one template set, which blows
-            # the calibration apart (a real case left three "Neo" takes
-            # alongside three "Neo uyan" ones, pushing the spread to 50.4 and
-            # leaving a threshold that accepted ordinary speech).
-            self._spotter.clear()
-            self._update_enroll_label()
-            self._append(
-                "NEO",
-                f"Hadi başlayalım: {ENROLLMENT_SAMPLES} kere '{self._wake_phrase}' "
-                "diyeceksin. Her seferinde aynı hızda ve doğal söyle.",
-            )
-            for i in range(1, ENROLLMENT_SAMPLES + 1):
-                enrolled = False
-                for attempt in range(1, ENROLLMENT_MAX_RETRIES + 1):
-                    self._append(
-                        "NEO",
-                        f"Örnek {i}/{ENROLLMENT_SAMPLES}: şimdi '{self._wake_phrase}' de...",
-                    )
-                    self._set_state(AgentState.LISTENING)
-                    await asyncio.sleep(ENROLLMENT_PREPARE_SECONDS)
-                    try:
-                        self._recorder.start()
-                    except MicrophoneUnavailableError as exc:
-                        self._append("NEO", str(exc))
-                        self._set_state(AgentState.ERROR)
-                        return
-                    await asyncio.sleep(ENROLLMENT_RECORD_SECONDS)
-                    audio = self._recorder.stop()
-                    enrolled = audio.size > 0 and self._spotter.enroll(audio)
-                    if enrolled:
-                        break
-                    self._append("NEO", "Pek bir şey duyamadım, bu örneği tekrar alalım.")
-                if not enrolled:
-                    self._append("NEO", "Bu örneği bir türlü alamadım, mikrofonunu kontrol edip tekrar dener misin?")
-                    self._set_state(AgentState.ERROR)
-                    return
-                self._update_enroll_label()
-
-            if not await self._enroll_negative_speech():
-                return
-
-            # Show the measured phrase length: when enrollment silently
-            # captured 2.1s of breath and room noise around a ~1s phrase,
-            # nothing on screen revealed it and the wake word just "felt
-            # unreliable" for days.
-            duration = self._spotter.enrolled_duration
-            detail = f" Ölçülen ifade uzunluğu: {duration:.1f} sn." if duration else ""
-
-            if self._spotter.is_calibrated:
-                self._append(
-                    "NEO",
-                    "Öğrenme tamamlandı! Sesin diğer konuşmandan net ayrışıyor "
-                    f"(ayrışma payı {self._spotter.separation:.1f}).{detail} "
-                    "Artık sürekli dinlemeyi açabilirsin.",
-                )
-            else:
-                # Never claim this worked when the numbers say it didn't --
-                # the user would spend the evening wondering why NEO keeps
-                # waking up mid-sentence.
-                # The number alone told the user nothing actionable, and
-                # "pozitif olmalı" was outright wrong once the bar became a
-                # fraction of the spread rather than zero: a separation of
-                # 5.3 is positive and still far too small. Say what the two
-                # numbers mean and what actually helps.
-                spread = getattr(self._spotter, "_spread", None)
-                measured = (
-                    f"(ayrışma {self._spotter.separation:.1f}, "
-                    f"kendi kayıtlarının yayılımı {spread:.1f})"
-                    if spread else f"(ayrışma {self._spotter.separation:.1f})"
-                )
-                self._append(
-                    "NEO",
-                    f"Öğrenme tamamlandı ama '{self._wake_phrase}' ile normal "
-                    f"konuşman yeterince ayrışmadı {measured}.{detail} "
-                    "Uyandırma yine de çalışır — kararı ses tanıma veriyor — "
-                    "ama yanlış tetiklenme olabilir. Tekrar öğretirken "
-                    "ifadeyi her seferinde aynı hız ve tonda söylemek "
-                    "ayrışmayı en çok artıran şey.",
-                )
-            self._set_state(AgentState.IDLE)
-        finally:
-            self._enrolling = False
-            self._enroll_button.setEnabled(True)
-            self._update_wake_toggle_label()
-
-    async def _enroll_negative_speech(self) -> bool:
-        """Records a stretch of ordinary talking so the detector learns what
-        *isn't* the wake word.
-
-        Without this the match threshold was derived only from how much the
-        user's own "Neo" takes vary, which says nothing about how close their
-        normal speech gets -- and it turned out to get very close, so NEO
-        woke up on ordinary conversation.
-        """
-        self._append(
-            "NEO",
-            f"Son adım: {NEGATIVE_RECORD_SECONDS:.0f} saniye boyunca normal konuş — "
-            f"aklına ne gelirse, ama '{self._wake_phrase}' deme. Bu, seni "
-            "dinlerken hangi seslerin uyandırma ifadesi olmadığını öğreniyor.",
-        )
-        self._set_state(AgentState.LISTENING)
-        await asyncio.sleep(ENROLLMENT_PREPARE_SECONDS)
-        try:
-            self._recorder.start()
-        except MicrophoneUnavailableError as exc:
-            self._append("NEO", str(exc))
-            self._set_state(AgentState.ERROR)
-            return False
-
-        await asyncio.sleep(NEGATIVE_RECORD_SECONDS)
-        audio = self._recorder.stop()
-        added = self._spotter.enroll_negative(audio) if audio.size else 0
-        if added == 0:
-            self._append(
-                "NEO",
-                "Bu kayıtta konuşma duyamadım, o yüzden ayrıştırmayı kalibre "
-                "edemedim. Öğretmeyi tekrar çalıştırıp bu adımda biraz "
-                "konuşursan yanlış tetiklenmeler ciddi şekilde azalır.",
-            )
-            self._set_state(AgentState.IDLE)
-            return False
-        logger.info("Uyandırma kalibrasyonu: %d olumsuz pencere kaydedildi", added)
-        return True
-
-    # -- wake word ("Neo") -------------------------------------------------
+    # -- wake word ("Hey Jarvis" / double clap) -----------------------------
+    #
+    # No enrollment step: "Hey Jarvis" is a pretrained neural detector and
+    # the double clap needs no training either (see openwakeword_spotter.py
+    # and clap_detector.py), so there is nothing here to teach or calibrate.
 
     def _update_wake_toggle_label(self) -> None:
         if self._wake_listener is None:
             self._wake_toggle.setText("Sürekli dinleme: kullanılamıyor")
             self._wake_toggle.setEnabled(False)
             return
-        ready = self._spotter is not None and self._spotter.has_enough_templates()
-        self._wake_toggle.setEnabled(ready and not self._enrolling)
+        self._wake_toggle.setEnabled(True)
         active = self._wake_task is not None
         self._wake_toggle.setChecked(active)
-        if not ready:
-            self._wake_toggle.setText("Sürekli dinleme: önce sesini öğret")
-        else:
-            self._wake_toggle.setText(f"Sürekli dinleme: {'Açık' if active else 'Kapalı'}")
+        self._wake_toggle.setText(f"Sürekli dinleme: {'Açık' if active else 'Kapalı'}")
 
     def _on_wake_toggle_clicked(self) -> None:
         if self._wake_task is not None:
@@ -1027,8 +851,6 @@ class MainWindow(QMainWindow):
 
     def _start_wake_loop(self) -> None:
         if self._wake_listener is None or self._wake_task is not None:
-            return
-        if self._spotter is None or not self._spotter.has_enough_templates():
             return
         self._wake_task = asyncio.ensure_future(self._run_wake_loop())
         self._update_wake_toggle_label()

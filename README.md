@@ -22,12 +22,13 @@ python -m neo.main
 ```
 
 İlk açılışta yapman gerekenler:
-1. Pencerede **"🎓 Neo'yu öğret"** butonuna bas, 3 kez "Neo" de (sesini
-   öğrenmesi için — bkz. aşağıdaki not). Bu olmadan "Sürekli dinleme"
-   kapalı kalır; push-to-talk (🎙 basılı tut) her zaman çalışır.
-2. `.env` içine `ANTHROPIC_API_KEY` girmediysen veya Anthropic hesabında
+1. `.env` içine `ANTHROPIC_API_KEY` girmediysen veya Anthropic hesabında
    kredi yoksa, genel sohbet/araştırma çalışmaz ama saat/tarih/CPU/RAM/GPU/
    disk/hava durumu/takvim gibi temel işler API'siz de çalışır.
+
+"Sürekli dinleme"yi açtığında ekstra bir öğretim adımı gerekmez — "Hey
+Jarvis" de ya da iki kez çırp, ikisi de hazır çalışır (bkz. aşağıdaki not).
+Push-to-talk (🎙 basılı tut) her zaman çalışır.
 
 ## Test
 
@@ -55,12 +56,20 @@ pytest
 - [x] TTS: önce Microsoft'un doğal nöral erkek sesi (`tr-TR-AhmetNeural`,
       online), yoksa otomatik olarak offline Windows SAPI ("Microsoft
       Tolga") sesine düşer
-- [x] Kişiselleştirilmiş uyandırma kelimesi ("Neo"): genel amaçlı Whisper'ın
-      "Neo"yu sürekli "Ne?"/"Ne o?" diye yanlış anlaması yüzünden, artık
-      kullanıcının kendi ses örneklerini öğrenen bir akustik eşleştirici
-      (MFCC + DTW, `neo/voice/keyword_spotter.py`) kullanılıyor
-- [x] "Neo" algılanınca kısa bir bip sesi çalar (ekrana bakmadan da
+- [x] Uyandırma: eğitilmiş bir sinir ağı modeli, "Hey Jarvis"
+      (openWakeWord, `neo/voice/openwakeword_spotter.py`). Öğretim/kayıt
+      gerekmez — genel amaçlı Whisper'ın "Neo"yu sürekli "Ne?"/"Ne o?" diye
+      yanlış anlaması ve kullanıcının kendi ses örneklerine dayalı bir
+      akustik eşleştiricinin (MFCC + DTW) bu kullanıcının sesinde sıradan
+      konuşmadan güvenilir ayrışamaması yüzünden önceki yaklaşım
+      terk edildi. Sadece İngilizce hazır modeller var; "Neo" yok.
+- [x] Alternatif uyandırma: iki kez çırp (`neo/voice/clap_detector.py`) —
+      öğretim gerektirmez, her dilde çalışır
+- [x] Uyandırılınca kısa bir ses çalar ("Buyrun.", ekrana bakmadan da
       duyulduğunu anlaman için)
+- [x] NEO bir soru sorup cevabını beklerken, uyandırma kelimesi olmadan
+      otomatik dinlemeye geçer (yalnızca cevap beklenen anlarda —
+      `_expects_a_reply`, `neo/ui/main_window.py`)
 - [x] Konuşurken kendi sesini duyup kendine cevap vermesin diye, NEO
       konuşurken mikrofon otomatik susturuluyor; ayrıca yanlış tetiklenmeyi
       azaltmak için aktivasyon sonrası kısa bir "sağırlaşma" (cooldown) var
@@ -74,15 +83,15 @@ pytest
 - [x] API'siz çalışan yerel katman: saat/tarih/CPU/RAM/GPU/disk/hava
       durumu/takvim soruları ve "nasılsın"/"neler yapabilirsin" gibi
       sorular Claude'a hiç gitmeden yanıtlanıyor (`neo/core/local_commands.py`)
-- [x] GUI: 🎙 push-to-talk, ⏹ Durdur, "Neo'yu öğret" ve "Sürekli dinleme"
-      anahtarı, canlı CPU/RAM/GPU göstergeleri, ℹ bilgi butonu
+- [x] GUI: 🎙 push-to-talk, ⏹ Durdur, "Sürekli dinleme" anahtarı, canlı
+      CPU/RAM/GPU göstergeleri, ℹ bilgi butonu
 
-> **"Neo'yu öğret":** Sürekli dinleme anahtarı, sen "🎓 Neo'yu öğret"e basıp
-> 3 kez "Neo" diyerek sesini kaydettirene kadar kapalı kalır. Kayıt çok
-> sessiz/boşsa o örnek otomatik reddedilip yeniden istenir. Örnekler
-> `data/wake_word_templates.npz` içinde makinende saklanır, git'e eklenmez.
-> Yanlış tetiklenme yaşarsan "🎓 Neo'yu öğret"i tekrar çalıştırıp daha net
-> örnekler vermek genelde düzeltir.
+> **Uyandırma modelleri:** `NEO_WAKE_WORD_MODEL` (varsayılan `hey_jarvis`)
+> ilk çalıştırmada `data/wake_word_models/` altına indirilir (~5MB),
+> sonrasında tamamen çevrimdışı çalışır. Diğer hazır seçenekler: `alexa`,
+> `hey_mycroft`, `hey_rhasspy`. Hassasiyeti `NEO_WAKE_WORD_THRESHOLD`
+> (0..1, varsayılan 0.5) ayarlar; çift alkışı `NEO_ENABLE_CLAP_WAKE=false`
+> ile kapatabilirsin.
 >
 > STT modeli (`NEO_WHISPER_MODEL`, varsayılan `small`, ~500MB) ilk
 > kullanımda Hugging Face'ten indirilir. Farklı bir boyut istersen `.env`
@@ -208,9 +217,10 @@ Koyu, yeşil ağırlıklı temalı, tam ekran açılan tek odaklı bir panel:
   şişip parlar. Pencere gizlenince (tepsiye küçültme) animasyon durur.
   Tamamen numpy + QPainter ile çizilir, OpenGL gerekmez.
 - Altta tam genişlikte kontrol çubuğu: 🎙 push-to-talk, ⏹ anında durdur,
-  🎓 Neo'yu öğret, sürekli dinleme anahtarı ve canlı CPU/RAM/GPU çubukları
-  (`StatsPanel`, 2.5 saniyede bir gerçek verilerle günceller — Claude'a
-  gitmez, GPU yoksa "yok" yazar, asla sayı uydurmaz).
+  sürekli dinleme anahtarı (uyandırma: "Hey Jarvis" ya da çift alkış,
+  öğretim gerekmez) ve canlı CPU/RAM/GPU çubukları (`StatsPanel`, 2.5
+  saniyede bir gerçek verilerle günceller — Claude'a gitmez, GPU yoksa
+  "yok" yazar, asla sayı uydurmaz).
 - 💬 butonu sohbet akışını ve giriş satırını sağdan açar (varsayılan gizli).
 - ℹ butonuyla NEO hakkında kısa bilgi.
 

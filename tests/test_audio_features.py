@@ -78,7 +78,11 @@ def test_wake_gate_separates_short_speech_from_impacts():
     from registering. Measured separation is wide -- speech lands above 1s
     of detected voice, impacts and noise at exactly zero -- so guard that
     the two classes stay on their own sides."""
-    from neo.voice.keyword_spotter import _WAKE_MIN_SPEECH_MS as WAKE_MIN_SPEECH_MS
+    # A wake phrase is one short utterance, so VAD's default minimum
+    # segment length would sit right at the edge of discarding it -- this
+    # matched what keyword_spotter.py used before it was replaced by
+    # openwakeword_spotter.py, which does its own internal VAD instead.
+    WAKE_MIN_SPEECH_MS = 100
 
     window = 1.4
     short_word = _voiced(0.2, total_seconds=window, offset_seconds=0.3)

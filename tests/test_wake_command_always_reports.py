@@ -13,9 +13,7 @@ from __future__ import annotations
 import asyncio
 
 import numpy as np
-import pytest
 
-import neo.voice.wake_word as ww
 from neo.voice.stt import STTUnavailableError
 from neo.voice.wake_word import SAMPLE_RATE, WakeWordListener
 
@@ -23,17 +21,18 @@ LOUD = np.full(int(0.3 * SAMPLE_RATE), 0.5, dtype=np.float32)
 QUIET = np.zeros(int(0.3 * SAMPLE_RATE), dtype=np.float32)
 
 
-class _Spotter:
-    def has_enough_templates(self, minimum=3):
-        return True
-
-    detection_window_seconds = 1.4
+class _WakeSpotter:
+    """Fires exactly once, on the first chunk fed to it -- enough to drive
+    the loop into command capture a single time, the way a real detector
+    firing on a genuine "Hey Jarvis" would."""
 
     def __init__(self):
         self.fired = False
 
-    def is_match(self, audio):
-        # Fire exactly once, so the loop enters command capture a single time.
+    def preload(self):
+        pass
+
+    def feed(self, chunk):
         if self.fired:
             return False
         self.fired = True
@@ -53,9 +52,10 @@ class _STT:
 def _run_capture(monkeypatch, stt, *, enough_speech=True, vad_seconds=1.0):
     """Drive run() through one wake + one command capture, return the
     arguments on_command was called with."""
-    listener = WakeWordListener(_Spotter(), stt)
+    import neo.voice.wake_word as ww
+
+    listener = WakeWordListener(_WakeSpotter(), stt)
     monkeypatch.setattr(listener, "_open_stream", lambda: None)
-    monkeypatch.setattr(listener, "_confirm_wake_phrase", lambda w: _true())
     monkeypatch.setattr(ww, "has_enough_speech", lambda *a, **k: enough_speech)
     monkeypatch.setattr(ww, "speech_seconds", lambda *a, **k: vad_seconds)
 
@@ -88,10 +88,6 @@ def _run_capture(monkeypatch, stt, *, enough_speech=True, vad_seconds=1.0):
 
     asyncio.run(drive())
     return calls
-
-
-async def _true():
-    return True
 
 
 def test_reports_when_there_is_too_little_speech(monkeypatch):
@@ -129,10 +125,11 @@ def test_the_activation_chime_does_not_swallow_the_command(monkeypatch):
     the listener had already gone back to waiting for the wake word. The
     user had done nothing wrong and got no way to tell.
     """
+    import neo.voice.wake_word as ww
+
     stt = _STT("saat kaç")
-    listener = WakeWordListener(_Spotter(), stt)
+    listener = WakeWordListener(_WakeSpotter(), stt)
     monkeypatch.setattr(listener, "_open_stream", lambda: None)
-    monkeypatch.setattr(listener, "_confirm_wake_phrase", lambda w: _true())
     monkeypatch.setattr(ww, "has_enough_speech", lambda *a, **k: True)
     monkeypatch.setattr(ww, "speech_seconds", lambda *a, **k: 1.0)
 

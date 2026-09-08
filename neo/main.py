@@ -75,8 +75,9 @@ from .tools.fetch_page import FetchPageTool
 from .ui.main_window import MainWindow
 from .ui.mode_unlock_dialog import request_helper_mode_unlock
 from .voice import chime
-from .voice.keyword_spotter import KeywordSpotter
+from .voice.clap_detector import ClapDetector
 from .voice.microphone import PushToTalkRecorder
+from .voice.openwakeword_spotter import OpenWakeWordSpotter
 from .voice.stt import WhisperSTT
 from .voice.tts import EdgeTTS, FallbackTTS, SapiTTS
 from .voice.wake_word import WakeWordListener
@@ -283,26 +284,23 @@ def main() -> int:
     recorder = PushToTalkRecorder()
     stt = WhisperSTT(model_size=settings.whisper_model, device=settings.whisper_device)
     tts = FallbackTTS(EdgeTTS(), SapiTTS())
-    spotter = KeywordSpotter(settings.data_dir / "wake_word_templates.npz")
-    confirm_stt = (
-        WhisperSTT(model_size=settings.wake_confirm_model, device=settings.whisper_device)
-        if settings.wake_confirm_model
-        else None
+    wake_spotter = OpenWakeWordSpotter(
+        model_name=settings.wake_word_model,
+        threshold=settings.wake_word_threshold,
+        models_dir=settings.data_dir / "wake_word_models",
     )
-    wake_listener = WakeWordListener(
-        spotter,
-        stt,
-        wake_phrase=settings.wake_phrase,
-        confirm_stt=confirm_stt,
-        confirm_threshold=settings.wake_sensitivity,
-    )
+    # Opt-out rather than opt-in: a double clap needs no enrollment, no
+    # training and works regardless of what language the user speaks, so
+    # there's no real cost to leaving it on for everyone who wants
+    # continuous listening at all.
+    clap_detector = ClapDetector() if settings.enable_clap_wake else None
+    wake_listener = WakeWordListener(wake_spotter, stt, clap_detector=clap_detector)
     window = MainWindow(
         agent,
         recorder=recorder,
         stt=stt,
         tts=tts,
         wake_listener=wake_listener,
-        spotter=spotter,
         wake_phrase=settings.wake_phrase,
         update_manifest_url=settings.update_manifest_url,
     )

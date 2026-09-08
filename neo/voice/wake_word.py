@@ -10,43 +10,13 @@ from typing import Awaitable, Callable
 import numpy as np
 
 from .audio_features import has_enough_speech, speech_seconds
-from .phrase_match import similarity
-from .keyword_spotter import KeywordSpotter
+from .clap_detector import ClapDetector
+from .openwakeword_spotter import OpenWakeWordSpotter, WakeWordModelUnavailableError
 from .stt import STTUnavailableError, WhisperSTT
 
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
-
-# The wake word is a single short word, so VAD's default minimum segment
-# length would be right at the edge of discarding it. Lowered only for the
-# wake check; command audio keeps the stricter default.
-# Wake-word acoustic gating (speech present, phrase isolated, duration
-# plausible) lives in KeywordSpotter: every one of those checks needs the
-# enrolled recordings as its reference, and doing them there lets a single
-# VAD pass serve all of them plus the DTW comparison.
-
-# Set from what the recognizer actually produces on this microphone, not
-# from clean text. Live transcripts of genuine "Neo uyan" attempts came back
-# as 'Ne yok, uyan.' (0.84) and 'Ne o ya?' (0.80); noise came back as
-# 'Ne oluyor?' (0.59) and 'Mel oya' (0.53). An earlier 0.85 -- derived from
-# tidy strings -- would have rejected every real attempt in that log.
-#
-# Since `_best_trailing_suffix_match` started crediting transcripts that
-# only carry the tail of the phrase, the two groups do separate cleanly.
-# Scored over every transcript in logs/neo.log: nine genuine attempts
-# ('uyan.', 'Ne yok, uyan.', 'Ne o ya?', ...) score 0.80-1.00, while
-# eighteen noise/ordinary-speech transcripts ('Ne oluyor?', 'Teşekkürler.',
-# 'Zeynep.', ...) top out at 0.59. 0.70 sits in that 0.21-wide gap with
-# headroom on both sides.
-WAKE_PHRASE_THRESHOLD = 0.70
-
-# Confirmation runs the recognizer, which costs about a second of CPU. The
-# log shows three confirmations inside two seconds while the acoustic
-# matcher fired repeatedly on the same noise -- so the machine spent its
-# time transcribing an empty room, which is a large part of why replies
-# felt slow. One attempt per window is enough.
-CONFIRM_COOLDOWN_SECONDS = 2.0
 
 OnWake = Callable[[], Awaitable[None]]
 OnCommand = Callable[[str], Awaitable[None]]
@@ -81,17 +51,16 @@ def _should_finalize_command(
 @dataclass
 class WakeWordConfig:
     step_seconds: float = 0.3
-    detect_window_seconds: float = 1.4
-    # This mic's real speech turned out to run much quieter than assumed
-    # (0.015 rejected the user's actual voice almost every time -- see
-    # `logs/neo.log` "Komut atlandı" spam after this guard first shipped).
-    # Lowered with headroom above the ~0.0007 measured ambient-noise floor.
     energy_threshold: float = 0.006
     command_timeout_seconds: float = 8.0
     # Every one of these seconds is dead air after the user has finished
     # talking, before NEO even starts thinking. 1.5s was noticeably long in
     # use; 1.0s still absorbs an ordinary mid-sentence pause.
     end_of_command_silence_seconds: float = 1.0
+    # A short pause after a command finalizes before the wake detectors
+    # listen again -- the tail of the user's own speech (or the room
+    # settling) was occasionally similar enough to a wake trigger to fire
+    # again immediately.
     reactivation_cooldown_seconds: float = 2.0
     # Live logs after the 0.006 threshold still showed genuine attempts
     # (peaks 0.03-0.09, clearly real speech, not silence) rejected because
@@ -112,13 +81,12 @@ class WakeWordConfig:
 
 
 class WakeWordListener:
-    """Always-on listening loop: stays silent until it hears the enrolled
-    wake word -- matched acoustically via KeywordSpotter against the user's
-    own recordings, not guessed from generic speech-to-text (see that
-    module's docstring for why) -- then records whatever follows until the
-    user pauses or times out, and hands the whole utterance to Whisper in
-    one piece, mirroring push-to-talk instead of chopping speech into fixed
-    windows.
+    """Always-on listening loop: stays silent until it hears "Hey Jarvis"
+    (detected by a trained neural model, see openwakeword_spotter.py) or a
+    deliberate double clap (see clap_detector.py), then records whatever
+    follows until the user pauses or times out, and hands the whole
+    utterance to Whisper in one piece, mirroring push-to-talk instead of
+    chopping speech into fixed windows.
 
     Nothing is forwarded to the Agent/LLM until an actual command has been
     recognized, so ambient conversation never leaves the machine.
@@ -126,35 +94,17 @@ class WakeWordListener:
 
     def __init__(
         self,
-        spotter: KeywordSpotter,
+        wake_spotter: OpenWakeWordSpotter,
         stt: WhisperSTT,
         config: WakeWordConfig | None = None,
-        wake_phrase: str | None = None,
-        confirm_stt: WhisperSTT | None = None,
-        confirm_threshold: float = WAKE_PHRASE_THRESHOLD,
+        clap_detector: ClapDetector | None = None,
     ) -> None:
-        self._spotter = spotter
+        self._wake_spotter = wake_spotter
         self._stt = stt
         self._config = config or WakeWordConfig()
-        # Configurable rather than hard-coded: the right operating point on
-        # the false-accept/false-reject curve is genuinely per-user (a
-        # quiet room vs. a noisy one, a directional mic vs. a laptop's
-        # built-in one), the same reasoning every wake-word engine's own
-        # "sensitivity" setting is built on (Porcupine, openWakeWord,
-        # Home Assistant's wake-word docs all expose this rather than
-        # picking one value for everyone). WAKE_PHRASE_THRESHOLD stays the
-        # default for anyone who never touches it.
-        self._confirm_threshold = confirm_threshold
-        # Acoustic matching alone could not separate the wake phrase from
-        # ordinary speech on this user's voice: with clean ~1s enrollments,
-        # their own three takes sat 35-44 apart while nine of ten windows of
-        # unrelated speech sat 32-42 away -- the templates were no closer to
-        # each other than to everything else. So DTW is demoted to a cheap
-        # pre-filter and the words themselves are confirmed by recognition,
-        # which is a far stronger discriminator for a two-word phrase.
-        self._wake_phrase = wake_phrase
-        self._confirm_stt = confirm_stt
-        self._confirm_blocked_until = 0.0
+        # Optional: a caller that doesn't want the clap gesture (or wants a
+        # differently-tuned one) can pass its own detector or None.
+        self._clap_detector = clap_detector
         self._followup_deadline = 0.0
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream = None
@@ -229,69 +179,43 @@ class WakeWordListener:
         except queue.Empty:
             pass
 
-    async def run(self, on_wake: OnWake, on_command: OnCommand, is_muted: IsMuted | None = None) -> None:
-        if not self._spotter.has_enough_templates():
-            raise WakeWordUnavailableError(
-                "Uyandırma kelimesi henüz öğretilmedi. Önce 'Neo'yu öğret."
-            )
+    def _check_wake_triggers(self, chunk: np.ndarray) -> bool:
+        """Feeds `chunk` to whichever wake detectors are active. Both run
+        even after one fires in the same tick, so neither one's internal
+        state (openWakeWord's debounce buffer, the clap detector's onset
+        tracking) falls behind the audio actually heard."""
+        woke = False
+        try:
+            if self._wake_spotter.feed(chunk):
+                woke = True
+        except WakeWordModelUnavailableError:
+            logger.exception("Uyandırma modeli kullanılamıyor")
+        if self._clap_detector is not None and self._clap_detector.feed(chunk):
+            woke = True
+        return woke
 
+    async def run(self, on_wake: OnWake, on_command: OnCommand, is_muted: IsMuted | None = None) -> None:
         self._open_stream()
         self._running = True
         step_samples = int(self._config.step_seconds * SAMPLE_RATE)
-        # Sized from what the user actually enrolled rather than a fixed
-        # constant: a two-word phrase needs a wider window than a single
-        # short word, and the isolation check below needs silence around the
-        # phrase to have something to measure.
-        window_seconds = max(
-            self._config.detect_window_seconds, self._spotter.detection_window_seconds
-        )
-        window_samples = int(window_seconds * SAMPLE_RATE)
-        logger.info("Uyandırma penceresi: %.2f sn", window_seconds)
         silence_gap_samples = int(self._config.end_of_command_silence_seconds * SAMPLE_RATE)
 
-        # Loaded up front and then kept, for as long as continuous listening
-        # is on, because every wake-up depends on it.
-        #
-        # This loop used to call unload_if_idle() on the confirm model every
-        # tick, which freed it after five idle minutes. NEO idles for hours,
-        # so in practice every real wake-up was a cold start: the user said
-        # the phrase, the model began loading from disk, and seconds passed
-        # before anything was even transcribed. That is exactly the reported
-        # "it never wakes on the first try, only the second" -- the second
-        # try worked because the first one had loaded the model. Its memory
-        # is the price of a wake word that answers; NEO_WAKE_CONFIRM_MODEL
-        # is the knob for anyone who would rather pay less of it.
-        if self._confirm_stt is not None and self._wake_phrase:
-            await self._confirm_stt.preload()
+        # Loaded (and, on first run, downloaded) up front and then kept for
+        # as long as continuous listening is on, since every wake-up
+        # depends on it -- loading takes real time, and paying that on the
+        # very first genuine attempt reads as "it didn't hear me".
+        try:
+            await asyncio.to_thread(self._wake_spotter.preload)
+        except WakeWordModelUnavailableError as exc:
+            raise WakeWordUnavailableError(str(exc)) from exc
 
-        # The command model is the larger one and is not needed until after
-        # a wake word, a cue and a spoken command have gone by -- so it is
-        # warmed in the background rather than delaying the moment listening
-        # starts. Loading it lazily instead put its several seconds directly
-        # between the user finishing their first command and NEO reacting,
-        # which read on screen as "Dinliyor" hanging and then a long think.
         preload = getattr(self._stt, "preload", None)
         if preload is not None:
             asyncio.ensure_future(preload())
 
-        # Printed once per session so a wake word that "just doesn't work"
-        # can be told apart from one whose enrollment never separated the
-        # phrase from ordinary speech -- the difference decides whether to
-        # tune thresholds or re-record, and nothing in the log said which.
-        # Read defensively: a diagnostic must never be the reason waking up
-        # stops working.
-        separation = getattr(self._spotter, "separation", None)
-        logger.info(
-            "Uyandırma kalibrasyonu: %s örnek, %s olumsuz, eşik %s, ayrışma %s%s",
-            getattr(self._spotter, "template_count", "?"),
-            getattr(self._spotter, "negative_count", "?"),
-            f"{getattr(self._spotter, 'threshold', float('nan')):.1f}",
-            f"{separation:.1f}" if separation is not None else "yok",
-            "" if getattr(self._spotter, "is_calibrated", True)
-            else "  [ZAYIF: yeniden öğretmek gerekebilir]",
-        )
+        rolling_energy_note = "alkış açık" if self._clap_detector is not None else "alkış kapalı"
+        logger.info("Sürekli dinleme başladı (Hey Jarvis, %s)", rolling_energy_note)
 
-        rolling = np.zeros(0, dtype="float32")
         command_buffer: np.ndarray | None = None
         silence_run = 0
         heard_speech = False
@@ -312,7 +236,6 @@ class WakeWordListener:
                     if was_muted:
                         was_muted = False
                         self._drain()
-                        rolling = np.zeros(0, dtype="float32")
                         if command_buffer is not None:
                             # A capture opened by the wake word is still
                             # live and the mute was almost certainly NEO's
@@ -358,7 +281,6 @@ class WakeWordListener:
                             # producing a spurious extra "Dinliyorum."
                             cooldown_until = time.monotonic() + self._config.reactivation_cooldown_seconds
                             self._drain()
-                            rolling = np.zeros(0, dtype="float32")
 
                             min_voiced = int(self._config.min_command_voiced_seconds * SAMPLE_RATE)
                             if not has_enough_speech(finished, self._config.energy_threshold, min_voiced):
@@ -408,21 +330,20 @@ class WakeWordListener:
                             asyncio.ensure_future(on_command(text or ""))
                         continue
 
-                    rolling = np.concatenate([rolling, new_audio])[-window_samples:]
-                    if not is_loud or time.monotonic() < cooldown_until:
+                    if time.monotonic() < cooldown_until:
                         continue
 
                     if time.monotonic() < self._followup_deadline:
                         # A follow-up window is open: what matters is only
                         # that the user said something back, not that they
-                        # repeated the wake phrase -- so the acoustic match
-                        # and its recognizer confirmation are both skipped
-                        # here. Downstream, the same VAD/duration checks a
-                        # normal command goes through still apply, so a
-                        # stray noise just quietly fails there instead of
-                        # ever reaching the wake word at all.
+                        # repeated the wake word -- so the detectors below
+                        # are skipped here entirely. Downstream, the same
+                        # VAD/duration checks a normal command goes through
+                        # still apply, so a stray noise just quietly fails
+                        # there instead of ever reaching a wake trigger.
+                        if not is_loud:
+                            continue
                         self._followup_deadline = 0.0  # one utterance consumes it
-                        rolling = np.zeros(0, dtype="float32")
                         asyncio.ensure_future(on_wake())
                         command_buffer = np.zeros(0, dtype="float32")
                         silence_run = 0
@@ -430,19 +351,12 @@ class WakeWordListener:
                         command_deadline = time.monotonic() + self._config.command_timeout_seconds
                         continue
 
-                    matched = await asyncio.to_thread(self._spotter.is_match, rolling)
-                    if not matched:
-                        continue
-
-                    if not await self._confirm_wake_phrase(rolling):
-                        continue
-
-                    rolling = np.zeros(0, dtype="float32")
-                    asyncio.ensure_future(on_wake())
-                    command_buffer = np.zeros(0, dtype="float32")
-                    silence_run = 0
-                    heard_speech = False
-                    command_deadline = time.monotonic() + self._config.command_timeout_seconds
+                    if self._check_wake_triggers(new_audio):
+                        asyncio.ensure_future(on_wake())
+                        command_buffer = np.zeros(0, dtype="float32")
+                        silence_run = 0
+                        heard_speech = False
+                        command_deadline = time.monotonic() + self._config.command_timeout_seconds
                 except Exception:
                     logger.exception("Sürekli dinleme döngüsünde beklenmeyen hata")
                     if command_buffer is not None:
@@ -454,46 +368,6 @@ class WakeWordListener:
                     await asyncio.sleep(1.0)
         finally:
             self.stop()
-
-    async def _confirm_wake_phrase(self, window: np.ndarray) -> bool:
-        """Second opinion on an acoustic match: does the audio actually say
-        the wake phrase?
-
-        Runs only after the spotter has already accepted the window, so the
-        recognizer is invoked on the rare candidate rather than continuously.
-        When no confirmer is configured the acoustic verdict stands, so this
-        can be turned off without disabling continuous listening.
-        """
-        if self._confirm_stt is None or not self._wake_phrase:
-            return True
-
-        now = time.monotonic()
-        if now < self._confirm_blocked_until:
-            logger.debug("Uyandırma doğrulaması atlandı: çok sık")
-            return False
-        self._confirm_blocked_until = now + CONFIRM_COOLDOWN_SECONDS
-
-        try:
-            transcript = await self._confirm_stt.transcribe(window)
-        except STTUnavailableError:
-            # Never let a broken confirmer make NEO deaf -- fall back to the
-            # acoustic decision it was only ever meant to refine.
-            logger.exception("Uyandırma doğrulaması yapılamadı, akustik karar geçerli")
-            return True
-
-        if not transcript:
-            logger.debug("Uyandırma reddedildi: doğrulamada metin çıkmadı")
-            return False
-
-        score = similarity(transcript, self._wake_phrase)
-        accepted = score >= self._confirm_threshold
-        logger.info(
-            "Uyandırma doğrulama: %r -> benzerlik %.2f (%s)",
-            transcript,
-            score,
-            "kabul" if accepted else "red",
-        )
-        return accepted
 
     def stop(self) -> None:
         self._running = False

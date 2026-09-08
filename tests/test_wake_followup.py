@@ -1,7 +1,7 @@
 """A follow-up window lets the user reply without repeating the wake word.
 
-Requested directly: saying "Neo uyan" with the crisp diction it needs to be
-recognized is realistic once, deliberately, but not for every turn of an
+Requested directly: saying "Hey Jarvis" with the crisp diction it needs to
+be recognized is realistic once, deliberately, but not for every turn of an
 ordinary back-and-forth -- "gunluk hayatta bu her zaman mumkun degil".
 MainWindow opens the window right after speaking a reply
 (neo/ui/main_window.py); this file covers the primitive in isolation.
@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 
 import numpy as np
-import pytest
 
 import neo.voice.wake_word as ww
 from neo.voice.wake_word import SAMPLE_RATE, WakeWordListener
@@ -21,19 +20,17 @@ LOUD = np.full(int(0.3 * SAMPLE_RATE), 0.5, dtype=np.float32)
 QUIET = np.zeros(int(0.3 * SAMPLE_RATE), dtype=np.float32)
 
 
-class _Spotter:
-    detection_window_seconds = 1.4
-
+class _WakeSpotter:
     def __init__(self):
-        self.match_calls = 0
+        self.feed_calls = 0
 
-    def has_enough_templates(self, minimum=3):
-        return True
+    def preload(self):
+        pass
 
-    def is_match(self, audio):
-        # Never matches acoustically -- any wake-up seen in these tests can
-        # only have come from the follow-up bypass, not this path.
-        self.match_calls += 1
+    def feed(self, chunk):
+        # Never fires -- any wake-up seen in these tests can only have
+        # come from the follow-up bypass, not this path.
+        self.feed_calls += 1
         return False
 
 
@@ -46,7 +43,7 @@ class _STT:
 
 
 def _listener(monkeypatch, spotter=None):
-    listener = WakeWordListener(spotter or _Spotter(), _STT())
+    listener = WakeWordListener(spotter or _WakeSpotter(), _STT())
     monkeypatch.setattr(listener, "_open_stream", lambda: None)
     monkeypatch.setattr(ww, "has_enough_speech", lambda *a, **k: True)
     monkeypatch.setattr(ww, "speech_seconds", lambda *a, **k: 1.0)
@@ -84,7 +81,7 @@ def _drive(listener, script, monkeypatch):
 
 
 def test_a_followup_window_lets_speech_through_without_the_wake_word(monkeypatch):
-    spotter = _Spotter()
+    spotter = _WakeSpotter()
     listener = _listener(monkeypatch, spotter)
     listener.open_followup_window()
 
@@ -92,11 +89,11 @@ def test_a_followup_window_lets_speech_through_without_the_wake_word(monkeypatch
 
     assert wakes == [1]
     assert calls == ["saat kaç"]
-    assert spotter.match_calls == 0, "acoustic wake-word matching must be bypassed"
+    assert spotter.feed_calls == 0, "wake-word detection must be bypassed"
 
 
 def test_without_an_open_window_the_wake_word_is_still_required(monkeypatch):
-    spotter = _Spotter()
+    spotter = _WakeSpotter()
     listener = _listener(monkeypatch, spotter)
     # No open_followup_window() call.
 
@@ -104,18 +101,18 @@ def test_without_an_open_window_the_wake_word_is_still_required(monkeypatch):
 
     assert wakes == []
     assert calls == []
-    assert spotter.match_calls > 0, "should have gone through the normal acoustic gate"
+    assert spotter.feed_calls > 0, "should have gone through the normal wake-word gate"
 
 
 def test_one_utterance_consumes_the_window(monkeypatch):
     """A follow-up window is meant for the next thing said, not every
     utterance until it times out."""
-    spotter = _Spotter()
+    spotter = _WakeSpotter()
     listener = _listener(monkeypatch, spotter)
 
     # A fake clock: the loop's own reactivation cooldown after the first
     # command (2s of real time) would otherwise swallow the second
-    # utterance before it ever reaches the acoustic gate, since this test
+    # utterance before it ever reaches the wake-word gate, since this test
     # drives the loop far faster than real audio arrives. Patched before
     # open_followup_window() so the window's own deadline is computed off
     # the same clock -- otherwise a real wall-clock deadline would outlast
@@ -159,11 +156,11 @@ def test_one_utterance_consumes_the_window(monkeypatch):
 
     assert wakes == [1]
     assert calls == ["saat kaç"]
-    assert spotter.match_calls > 0, "the second utterance should have hit the normal gate"
+    assert spotter.feed_calls > 0, "the second utterance should have hit the normal gate"
 
 
 def test_an_expired_window_no_longer_bypasses_the_wake_word(monkeypatch):
-    spotter = _Spotter()
+    spotter = _WakeSpotter()
     listener = _listener(monkeypatch, spotter)
     listener.open_followup_window(seconds=-1.0)  # already in the past
 
@@ -171,7 +168,7 @@ def test_an_expired_window_no_longer_bypasses_the_wake_word(monkeypatch):
 
     assert wakes == []
     assert calls == []
-    assert spotter.match_calls > 0
+    assert spotter.feed_calls > 0
 
 
 def test_stopping_the_listener_closes_any_open_window(monkeypatch):
@@ -193,10 +190,10 @@ def test_cancel_followup_window(monkeypatch):
 
 
 def test_a_noise_during_the_window_still_goes_through_vad_before_reaching_claude(monkeypatch):
-    """The bypass skips the wake-word match, not the hallucination guards a
+    """The bypass skips wake-word detection, not the hallucination guards a
     normal command still has to clear -- a stray sound during the window
     must not reach the agent as if it were a real command."""
-    spotter = _Spotter()
+    spotter = _WakeSpotter()
     listener = _listener(monkeypatch, spotter)
     monkeypatch.setattr(ww, "has_enough_speech", lambda *a, **k: False)
     listener.open_followup_window()

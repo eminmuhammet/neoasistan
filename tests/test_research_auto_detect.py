@@ -90,7 +90,13 @@ def test_research_mode_does_not_leak_into_the_next_ordinary_message():
     agent = Agent(_settings(), registry, llm_client=llm)
 
     asyncio.run(agent.handle_message("bunu detaylı incele lütfen"))
-    asyncio.run(agent.handle_message("teşekkürler"))
+    # Not "teşekkürler": local_commands.py's small-talk fast path answers
+    # thanks/goodbye phrases itself (see _STATIC_REPLIES) without ever
+    # calling the LLM, which left llm.last_max_tokens holding the first
+    # call's research value and made this assertion pass for the wrong
+    # reason -- it wasn't checking the second turn at all. This phrase
+    # matches no local fast path, so it actually reaches the LLM.
+    asyncio.run(agent.handle_message("bu konuda ne düşünüyorsun"))
 
     assert llm.last_max_tokens == MAX_TOKENS_DEFAULT
     assert "ARAŞTIRMA MODU AKTİF" not in llm.last_system

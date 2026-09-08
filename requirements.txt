@@ -12,6 +12,16 @@ faster-whisper>=1.0
 pywin32>=306
 edge-tts>=7.0
 
+# Wake word ("Hey Jarvis"): a pretrained neural detector replacing an
+# earlier DTW-against-the-user's-own-recordings approach that needed
+# enrollment and, on this project's own voice, still couldn't reliably
+# separate the wake phrase from ordinary speech (see
+# neo/voice/openwakeword_spotter.py). onnxruntime is usually already
+# pulled in transitively by faster-whisper, but is depended on directly
+# here too since openwakeword needs it regardless.
+openwakeword>=0.6.0
+onnxruntime>=1.20
+
 # Phase 3 -- Windows tools: app/website launching, CPU/RAM/GPU/disk info
 psutil>=5.9
 nvidia-ml-py>=12.0

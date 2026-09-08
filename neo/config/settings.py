@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Safe direction: neo.voice never imports neo.config, so no cycle.
-from ..voice.wake_word import WAKE_PHRASE_THRESHOLD
+from ..voice.openwakeword_spotter import DEFAULT_MODEL, DEFAULT_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -122,31 +122,30 @@ class Settings:
     # caller/test that constructs Settings directly.
     conversation_dir: Path = PROJECT_ROOT / "data" / "conversations"
     update_manifest_url: str | None = None
-    # Only ever shown in the enrollment prompts -- detection is acoustic and
-    # learns whatever the user actually records, so this text and the audio
-    # can't drift out of sync. Two words by default because a single short
-    # syllable gives DTW very little to discriminate on, which is why every
-    # commercial wake word is multi-syllable.
-    wake_phrase: str = "Neo uyan"
-    # A second, smaller model used only to confirm that an acoustic wake
-    # match really said the phrase. Kept separate from `whisper_model`
-    # because it stays resident while NEO idles listening, where the larger
-    # command model's memory footprint isn't worth paying continuously --
-    # and two words are an easy target for a small model. Empty disables
-    # confirmation and leaves the acoustic verdict final.
-    wake_confirm_model: str = "base"
-    # How closely a confirmation transcript must match wake_phrase to
-    # accept it, 0..1. Lower = fewer "I said it, why didn't it wake up"
-    # repeats but more accidental wakes on unrelated speech; higher is the
-    # reverse. Every wake-word engine exposes some form of this as a
-    # user-tunable "sensitivity" rather than one fixed value, since the
-    # right tradeoff genuinely depends on the room and microphone.
-    #
-    # Taken from WAKE_PHRASE_THRESHOLD rather than written out again: this
-    # is the value actually passed to the listener, so when the two were
-    # separate numbers, tuning the constant in wake_word.py changed nothing
-    # at runtime and the user kept having to repeat the wake phrase.
-    wake_sensitivity: float = WAKE_PHRASE_THRESHOLD
+    # Display text only (e.g. the "🎙 basılı tutup konuş, ya da 'Hey Jarvis'
+    # de" hint in the About dialog) -- detection itself is a trained neural
+    # model (see openwakeword_spotter.py), not this string. There is no
+    # pretrained "Neo" model; only English wake words ship pretrained
+    # (alexa, hey_mycroft, hey_jarvis, hey_rhasspy, timer, weather), and
+    # "Hey Jarvis" fits an assistant best among those.
+    wake_phrase: str = "Hey Jarvis"
+    # Which of openWakeWord's pretrained models to load. Keep in sync with
+    # wake_phrase above if this is ever changed.
+    wake_word_model: str = DEFAULT_MODEL
+    # How confident the model must be (0..1) before a frame counts as the
+    # wake word. Checked against this project's own synthesized audio:
+    # genuine "Hey Jarvis" utterances scored 0.999, unrelated Turkish and
+    # English speech both scored 0.000 -- an enormous margin either side of
+    # the default, unlike the old DTW-based matcher's ~4%-wide gap (see
+    # wake_word.py's git history). Still exposed, the way every wake-word
+    # engine exposes some form of "sensitivity", since the right operating
+    # point can still depend on the room and microphone.
+    wake_word_threshold: float = DEFAULT_THRESHOLD
+    # A deliberate double clap also wakes NEO (see clap_detector.py) --
+    # needs no enrollment or training and works in any language, so it's
+    # on by default alongside the spoken wake word rather than instead of
+    # it.
+    enable_clap_wake: bool = True
     # Opt-in: this opens a network port (LAN-reachable, token-protected --
     # see neo/web/server.py), which is not something a fresh install should
     # do without the user asking for it.
@@ -204,11 +203,13 @@ def load_settings() -> Settings:
         whisper_device=os.getenv("NEO_WHISPER_DEVICE", "cpu"),
         conversation_dir=Path(configured_dir) if configured_dir else _default_conversation_dir(),
         update_manifest_url=os.getenv("NEO_UPDATE_MANIFEST_URL") or None,
-        wake_phrase=os.getenv("NEO_WAKE_PHRASE", "Neo uyan"),
-        wake_confirm_model=os.getenv("NEO_WAKE_CONFIRM_MODEL", "base"),
-        wake_sensitivity=float(
-            os.getenv("NEO_WAKE_SENSITIVITY", str(WAKE_PHRASE_THRESHOLD))
+        wake_phrase=os.getenv("NEO_WAKE_PHRASE", "Hey Jarvis"),
+        wake_word_model=os.getenv("NEO_WAKE_WORD_MODEL", DEFAULT_MODEL),
+        wake_word_threshold=float(
+            os.getenv("NEO_WAKE_WORD_THRESHOLD", str(DEFAULT_THRESHOLD))
         ),
+        enable_clap_wake=os.getenv("NEO_ENABLE_CLAP_WAKE", "1").strip().lower()
+        in ("1", "true", "yes"),
         enable_web_panel=os.getenv("NEO_ENABLE_WEB_PANEL", "").strip().lower() in ("1", "true", "yes"),
         web_panel_port=int(os.getenv("NEO_WEB_PANEL_PORT", "8765")),
         enable_local_llm_fallback=os.getenv("NEO_ENABLE_LOCAL_LLM_FALLBACK", "").strip().lower()
