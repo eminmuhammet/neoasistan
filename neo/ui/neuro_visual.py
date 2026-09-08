@@ -71,13 +71,13 @@ _CAM_DIST    = 3.2   # perspective camera distance (sphere radius = 1)
 # against an invisible box.
 _CLIP_SCALE  = 0.72
 
-# Measured at 680 px: scattering 4 000 particles costs 2.8 ms and 60 000
-# costs 7.9 ms, while a single blur pass costs 7-14 ms no matter how many
-# particles produced the image. Density is therefore nearly free and
-# resolution is not -- and density is what the sphere was short of. At
-# 4 000 the shell read as scattered specks ("144p"); this many fills it.
-_N_SPHERE    = 40000
-_N_STARS     = 700   # background star field (fixed, no rotation)
+# Density is cheap relative to blur (scattering scales with particle count,
+# blur doesn't), but it isn't free, and reports of stutter and sustained
+# GPU load meant the sphere was costing more than it was worth at 60 000.
+# This still reads as a dense shell -- the earlier "144p" complaint was
+# about 4 000 -- for noticeably less per-frame cost.
+_N_SPHERE    = 22000
+_N_STARS     = 500
 
 # Rendered 1:1 with the widget so nothing is ever upscaled -- the old fixed
 # 600 px buffer was stretched to the widget's 680 px and that soft, slightly
@@ -234,6 +234,11 @@ def _wide_bloom(img: np.ndarray, S: int, factor: int = 4) -> np.ndarray:
     trimmed = img[: small * factor, : small * factor]
     low = trimmed.reshape(small, factor, small, factor).mean(axis=(1, 3))
     low = _box_blur1(low, max(1, 20 // factor))
+    # One extra blur pass at the *low* resolution, before upsampling, so
+    # neighbouring low-res samples bleed into each other -- np.repeat then
+    # tiles a smoother gradient instead of a hard step, and this avoids
+    # blurring the full-size array a second time.
+    low = _box_blur1(low, 1)
     up = np.repeat(np.repeat(low, factor, axis=0), factor, axis=1)
     if up.shape[0] == S:
         return up
@@ -306,22 +311,19 @@ class _ParticleData:
         self.sphere_sizes  = sizes           # (N,)
         self.sphere_phases = phases          # (N,)
 
-        # ── Background stars (fixed, never rotate) ────────────────────────
-        star_dirs  = _rand_unit_sphere(n_stars, rng)
-        star_radii = np.array(
+        # ── Background stars ──────────────────────────────────────────────
+        # Directions kept (not just the projection) so they can turn along
+        # with the sphere -- a star field pre-projected once and never
+        # rotated sat frozen behind a shell that kept turning around it,
+        # which read as "the middle stays still" while everything else moved.
+        self.star_dirs = _rand_unit_sphere(n_stars, rng)
+        self.star_radii = np.array(
             [rng.uniform(8.0, 22.0) for _ in range(n_stars)], dtype=np.float32
         )
-        star_phases = np.array(
+        self.star_phases = np.array(
             [rng.uniform(0.0, 2.0 * math.pi) for _ in range(n_stars)],
             dtype=np.float32,
         )
-        # Pre-project stars (they never move)
-        p   = star_dirs * star_radii[:, None]
-        psc = _CAM_DIST / (_CAM_DIST - p[:, 2])
-        self.star_sx     = p[:, 0] * psc * 0.055   # clip-space x (small scale)
-        self.star_sy     = p[:, 1] * psc * 0.055   # clip-space y
-        self.star_depth  = np.clip((p[:, 2] + 1.0) * 0.5, 0.0, 1.0)
-        self.star_phases = star_phases
 
 
 class NeuroVisual(QWidget):
@@ -331,7 +333,10 @@ class NeuroVisual(QWidget):
     + additive scatter) and QPainter image blit.  No OpenGL required."""
 
     _COMPACT_SIZE = 280
-    _FOCUS_SIZE   = 680
+    # Blur cost is O(side^2); dropping from 680 to 600 cuts it by about a
+    # fifth on top of the particle-count reduction above, in direct response
+    # to reports of the animation stuttering and driving sustained GPU load.
+    _FOCUS_SIZE   = 600
 
     _frame_ready = Signal(QPixmap)  # emitted from render thread → main thread
 
@@ -500,8 +505,21 @@ class NeuroVisual(QWidget):
         flat = np.zeros(S * S, dtype=np.float32)
         _splat(flat, S, fx, fy, alpha)
 
-        stw    = 0.35 + 0.65 * np.sin(time_ * 1.5 + pd.star_phases)
-        _splat(flat, S, pd.star_sx * cx + cx, pd.star_sy * cy + cy, stw * 0.40)
+        # Stars turn with the sphere, at a fraction of its rate -- distant
+        # enough to look like it barely moves, not so static it reads as a
+        # hole punched in the middle of an otherwise-rotating shell.
+        star_R = self._rotation_matrix(yaw * 0.18)
+        sp = (pd.star_dirs @ star_R.T) * pd.star_radii[:, None]
+        s_psc = _CAM_DIST / (_CAM_DIST - sp[:, 2])
+        s_fx = sp[:, 0] * s_psc * 0.055 * cx + cx
+        s_fy = sp[:, 1] * s_psc * 0.055 * cy + cy
+
+        # 0..1, twinkling but never negative -- a signed weight here was
+        # *subtracting* light from the buffer on every dim half of its
+        # cycle, and that dip survived into the low-resolution bloom pass as
+        # a visibly darker square block once it was upsampled back.
+        stw = 0.5 + 0.5 * np.sin(time_ * 1.5 + pd.star_phases)
+        _splat(flat, S, s_fx, s_fy, stw * 0.40)
 
         buf = flat.reshape(S, S)
 
