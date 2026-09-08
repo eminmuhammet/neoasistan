@@ -152,6 +152,24 @@ class Settings:
     # do without the user asking for it.
     enable_web_panel: bool = False
     web_panel_port: int = 8765
+    # Faz 2: when Claude is unreachable (no credit, no internet, API outage)
+    # on the very first LLM call of a turn -- i.e. before any tool has been
+    # decided on -- Agent falls back to a local Ollama model for a plain-text
+    # reply instead of surfacing the error. Off by default: it only helps if
+    # Ollama is actually installed and running, and silently trying to reach
+    # a port nobody's listening on just adds a timeout to every failure.
+    enable_local_llm_fallback: bool = False
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:3b"
+    # When on (and enable_local_llm_fallback is also on), ordinary chat is
+    # routed to the local model FIRST -- it has no tools, and is instructed
+    # to say so (see local_llm_client.ROUTER_INSTRUCTION) rather than answer
+    # anything that actually needs one, at which point Agent escalates to
+    # Claude exactly as if the local model weren't there. This is the "sohbet
+    # her zaman yerelde, Claude sadece iş/araç gerektiğinde" mode; the plain
+    # enable_local_llm_fallback-only mode instead only reaches the local
+    # model when Claude itself is unreachable.
+    route_chat_to_local: bool = False
 
     def require_api_key(self) -> str:
         if not self.anthropic_api_key:
@@ -193,4 +211,10 @@ def load_settings() -> Settings:
         ),
         enable_web_panel=os.getenv("NEO_ENABLE_WEB_PANEL", "").strip().lower() in ("1", "true", "yes"),
         web_panel_port=int(os.getenv("NEO_WEB_PANEL_PORT", "8765")),
+        enable_local_llm_fallback=os.getenv("NEO_ENABLE_LOCAL_LLM_FALLBACK", "").strip().lower()
+        in ("1", "true", "yes"),
+        ollama_url=os.getenv("NEO_OLLAMA_URL", "http://localhost:11434"),
+        ollama_model=os.getenv("NEO_OLLAMA_MODEL", "qwen2.5:3b"),
+        route_chat_to_local=os.getenv("NEO_ROUTE_CHAT_TO_LOCAL", "").strip().lower()
+        in ("1", "true", "yes"),
     )

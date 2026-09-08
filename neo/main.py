@@ -11,6 +11,7 @@ from .config.credentials import PasswordStore
 from .config.settings import Settings, load_settings
 from .core.access_mode import AccessModeManager
 from .core.agent import Agent
+from .core.local_llm_client import LocalLLMClient
 from .core.automation_panic import register_panic_hotkey
 from .core.disk_watch import DiskSpaceWatcher
 from .core.permissions import PermissionManager
@@ -69,6 +70,8 @@ from .tools.system_info import (
 )
 from .tools.time_tools import GetDateTool, GetTimeTool
 from .tools.weather import GetWeatherTool
+from .tools.web_search import WebSearchTool
+from .tools.fetch_page import FetchPageTool
 from .ui.main_window import MainWindow
 from .ui.mode_unlock_dialog import request_helper_mode_unlock
 from .voice import chime
@@ -94,6 +97,8 @@ def build_registry(settings: Settings) -> ToolRegistry:
     registry.register(GetGpuStatusTool())
     registry.register(GetNetworkStatusTool())
     registry.register(GetWeatherTool(settings.default_city))
+    registry.register(WebSearchTool())
+    registry.register(FetchPageTool())
 
     calendar_store = CalendarStore(settings.data_dir / "calendar.db")
     google_sync = GoogleCalendarSync(
@@ -223,6 +228,10 @@ def main() -> int:
 
     registry.set_audit_hook(_audit_hook)
 
+    local_llm_client = None
+    if settings.enable_local_llm_fallback:
+        local_llm_client = LocalLLMClient(settings.ollama_url, settings.ollama_model)
+
     agent = Agent(
         settings,
         registry,
@@ -231,6 +240,7 @@ def main() -> int:
         preference_store=preference_store,
         mode_manager=mode_manager,
         audit_store=audit_store,
+        local_llm_client=local_llm_client,
     )
 
     # run_task needs a reference to the already-constructed agent (it drives

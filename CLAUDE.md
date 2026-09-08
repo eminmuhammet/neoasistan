@@ -27,9 +27,6 @@ bu dosyanın kendisi bile iki oturumun aynı anda yazmasıyla çakıştı).
   `planner.set_on_progress(...)`, `window.set_access_mode(...)` gibi) — bir
   tarafın constructor imzasına bağımlı olmadan, ikisi de kendi hızında
   ilerleyebilsin diye.
-- **EXE paketleme/kurulum işini kullanıcının açık onayı olmadan yapma** —
-  bu tek istisna, "her şeyi otomatik yap" gibi genel talimatlar bile bunu
-  geçersiz kılmaz.
 - Commit mesajı sonunda: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`.
   PR açıklaması sonunda: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 

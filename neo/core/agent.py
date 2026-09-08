@@ -11,6 +11,7 @@ from ..config.settings import ConfigError, Settings
 from ..tools.base import RiskLevel, ToolRegistry
 from .context import ConversationContext
 from .llm_client import LLMClient, LLMRequestError
+from .local_llm_client import LocalLLMClient, LocalLLMError
 from .access_mode import AccessMode, AccessModeManager
 from .local_commands import (
     REQUEST_ASSISTANT_MODE,
@@ -148,6 +149,29 @@ _RESEARCH_OFF_PATTERN = re.compile(
     r"ara[şs]t[ıi]rma modu.*\b(kapat|kapa|[çc][ıi]k)|normal mod|\bmodu kapat"
 )
 
+# Faz 3A: a one-off research request ("bunu araştırır mısın", "detaylı
+# incele") gets the full KONU/ÖZET/... report treatment for just this turn,
+# without the user first having to say "araştırma modu" and remembering to
+# turn it back off. This mirrors what SYSTEM_PROMPT's "Web araması hakkında"
+# section already tells Claude to do on its own judgment -- the difference
+# is this also raises the token budget and skips local routing/the fast
+# path *before* the call, the same way the persistent toggle already does,
+# instead of leaving Claude to write a long report within a short-reply
+# token budget.
+_RESEARCH_INTENT_PATTERN = re.compile(
+    r"\bara[şs]t[ıi]r\w*"
+    r"|detayl[ıi] (bir )?(şekilde |incele)"
+    r"|derinlemesine"
+    r"|kapsaml[ıi] bir (ara[şs]t[ıi]rma|inceleme)"
+    r"|rapor haz[ıi]rla"
+    r"|birden fazla kaynak"
+    r"|çok kaynaktan"
+)
+
+
+def _looks_like_research_request(text: str) -> bool:
+    return bool(_RESEARCH_INTENT_PATTERN.search(text.lower()))
+
 
 def extract_spoken_summary(reply: str) -> str:
     """Returns just the part meant to be read aloud.
@@ -162,12 +186,11 @@ def extract_spoken_summary(reply: str) -> str:
             return stripped[len(SPOKEN_SUMMARY_PREFIX):].strip()
     return reply
 
-# Anthropic's server-side web search tool: Claude runs the search itself and
-# the result comes back embedded in the same API response (as
-# server_tool_use / web_search_tool_result blocks), so unlike the tools in
-# ToolRegistry this needs no local execution -- the loop below only acts on
-# type=="tool_use" blocks, which this never produces.
-WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+# Faz 1: web_search/fetch_page used to be Anthropic's server-side search
+# tool (billed per search on top of tokens, see git history). They're now
+# ordinary ToolRegistry tools (neo/tools/web_search.py, fetch_page.py) that
+# scrape DuckDuckGo's HTML endpoint for free -- registered like any other
+# tool in main.py, so no special casing is needed here any more.
 
 
 def _current_date_context() -> str:
@@ -274,6 +297,7 @@ class Agent:
         preference_store: PreferenceStore | None = None,
         mode_manager: AccessModeManager | None = None,
         audit_store: AuditStore | None = None,
+        local_llm_client: LocalLLMClient | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
@@ -284,6 +308,7 @@ class Agent:
         self._preference_store = preference_store
         self._mode_manager = mode_manager
         self._audit_store = audit_store
+        self._local_llm = local_llm_client
         self._mode_unlock_control = None
         self.research_mode = False
         self._listening_control = None
@@ -438,18 +463,19 @@ class Agent:
                 self._record("assistant", reply)
                 return reply
 
-        local_reply = None if self.research_mode else await try_handle_locally(text, self._registry)
+        # A one-off research request gets research-turn treatment (see
+        # _looks_like_research_request) even without the persistent toggle --
+        # self.research_mode itself is left untouched, so this never leaks
+        # into the next, unrelated message.
+        is_research_turn = self.research_mode or _looks_like_research_request(text)
+
+        local_reply = None if is_research_turn else await try_handle_locally(text, self._registry)
         if local_reply is not None:
             self._context.add_user(text)
             self._context.add_assistant(local_reply)
             self._record("user", text)
             self._record("assistant", local_reply)
             return local_reply
-
-        try:
-            self._ensure_client()
-        except ConfigError as exc:
-            return str(exc)
 
         self._context.add_user(text)
         self._record("user", text)
@@ -459,9 +485,28 @@ class Agent:
             + _preference_context(self._preference_store)
             + _mode_context(self._mode_manager)
         )
-        if self.research_mode:
+        if is_research_turn:
             system_prompt += RESEARCH_MODE_PROMPT
-        max_tokens = MAX_TOKENS_RESEARCH if self.research_mode else MAX_TOKENS_DEFAULT
+        max_tokens = MAX_TOKENS_RESEARCH if is_research_turn else MAX_TOKENS_DEFAULT
+
+        if not is_research_turn and self._local_llm is not None and self._settings.route_chat_to_local:
+            # Ordinary chat goes to the local model first, tool-free -- it's
+            # told to flag anything that actually needs a capability instead
+            # of guessing (see ROUTER_INSTRUCTION). Only an escalation reaches
+            # Claude at all, which is what keeps day-to-day conversation off
+            # the API entirely rather than merely cheaper.
+            needs_claude, local_text = await self._local_llm.chat_or_escalate(
+                self._context.messages, system_prompt
+            )
+            if not needs_claude:
+                self._context.add_assistant(local_text)
+                self._record("assistant", local_text)
+                return local_text
+
+        try:
+            self._ensure_client()
+        except ConfigError as exc:
+            return str(exc)
 
         reply = await self._run_tool_loop(self._context, system_prompt, max_tokens)
         self._record("assistant", reply)
@@ -495,16 +540,27 @@ class Agent:
         with no way to tell a real tool call from a made-up answer.
         """
         llm = self._ensure_client()
-        for _ in range(max_iterations):
+        for iteration in range(max_iterations):
             try:
                 response = await asyncio.to_thread(
                     llm.send,
                     context.messages,
                     system_prompt,
-                    [*self._registry.anthropic_tools(), WEB_SEARCH_TOOL],
+                    self._registry.anthropic_tools(),
                     max_tokens,
                 )
             except LLMRequestError as exc:
+                # Only on the first call of the turn: no tool has been
+                # decided on yet, so a plain-text local reply can't be
+                # standing in for one that was actually needed. From the
+                # second iteration on, Claude was already mid-tool-use --
+                # a local model has no way to pick up that thread, so the
+                # honest answer is still the original error.
+                if iteration == 0 and self._local_llm is not None:
+                    try:
+                        return await self._local_llm.chat(context.messages, system_prompt)
+                    except LocalLLMError:
+                        pass
                 return str(exc)
 
             context.add_assistant(response.content)
