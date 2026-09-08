@@ -1038,7 +1038,6 @@ class MainWindow(QMainWindow):
             self._speaking = False
 
     async def _on_wake_command(self, text: str) -> None:
-        self._active_command_task = asyncio.current_task()
         if not text:
             # Komut VAD tarafından reddedildi — LISTENING'den IDLE'a dön
             self._set_state(AgentState.IDLE)
@@ -1048,6 +1047,26 @@ class MainWindow(QMainWindow):
     # -- shared: recognized speech -> agent -> (optional) speech reply ----
 
     async def _handle_recognized_text(self, text: str) -> None:
+        # Both the wake-word command path and the typed-text path
+        # (_on_submit) land here, and neither used to stop an already
+        # in-flight call before starting another. A live session hit this:
+        # continuous listening was on, a typed research request went out
+        # while a prior turn was still mid-tool-loop, and the two calls
+        # interleaved writes on the same shared Agent._context.messages
+        # list -- Claude's next reply came back claiming it had received no
+        # request at all, then the turn after that hit MAX_TOOL_ITERATIONS
+        # ("Bu istek çok karmaşık hale geldi"). Every real request costs
+        # tokens, so a corrupted one is pure waste on top of never answering.
+        # Cancelling whichever call was already running (same interrupt
+        # semantics _on_wake_detected already uses for a fresh wake word)
+        # guarantees only one _agent.handle_message is ever touching the
+        # context at a time.
+        previous = self._active_command_task
+        current = asyncio.current_task()
+        if previous is not None and previous is not current and not previous.done():
+            previous.cancel()
+        self._active_command_task = current
+
         self._append("Sen", text)
         self._set_state(AgentState.PROCESSING)
         try:
