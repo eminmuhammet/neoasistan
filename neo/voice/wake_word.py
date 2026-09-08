@@ -104,6 +104,11 @@ class WakeWordConfig:
     # command seen in the logs ('Alo') carried 0.72s of speech, so 0.25s
     # leaves plenty of room under it.
     min_command_speech_seconds: float = 0.25
+    # After NEO finishes speaking a reply, how long open_followup_window()
+    # keeps the next utterance from needing the wake word repeated. Long
+    # enough to think for a beat and answer back; short enough that an
+    # unrelated sound half a minute later doesn't get mistaken for one.
+    followup_window_seconds: float = 7.0
 
 
 class WakeWordListener:
@@ -150,9 +155,31 @@ class WakeWordListener:
         self._wake_phrase = wake_phrase
         self._confirm_stt = confirm_stt
         self._confirm_blocked_until = 0.0
+        self._followup_deadline = 0.0
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream = None
         self._running = False
+
+    def open_followup_window(self, seconds: float | None = None) -> None:
+        """Lets the very next thing the user says be captured as a command
+        directly, without the wake word, for `seconds` (default
+        `WakeWordConfig.followup_window_seconds`).
+
+        Call this right after NEO finishes speaking a reply. A natural
+        back-and-forth doesn't repeat the wake phrase on every turn, and
+        expecting it to would demand the same clear, deliberate diction the
+        wake phrase itself needs to be recognized -- which an ordinary
+        conversational reply usually doesn't have. One utterance consumes
+        the window (successful or not); after that, or once `seconds` pass
+        with nothing said, the wake word is required again.
+        """
+        self._followup_deadline = time.monotonic() + (
+            seconds if seconds is not None else self._config.followup_window_seconds
+        )
+
+    def cancel_followup_window(self) -> None:
+        """Closes an open follow-up window without waiting for it to expire."""
+        self._followup_deadline = 0.0
 
     def _callback(self, indata, frames, time_info, status) -> None:
         if status:
@@ -385,6 +412,24 @@ class WakeWordListener:
                     if not is_loud or time.monotonic() < cooldown_until:
                         continue
 
+                    if time.monotonic() < self._followup_deadline:
+                        # A follow-up window is open: what matters is only
+                        # that the user said something back, not that they
+                        # repeated the wake phrase -- so the acoustic match
+                        # and its recognizer confirmation are both skipped
+                        # here. Downstream, the same VAD/duration checks a
+                        # normal command goes through still apply, so a
+                        # stray noise just quietly fails there instead of
+                        # ever reaching the wake word at all.
+                        self._followup_deadline = 0.0  # one utterance consumes it
+                        rolling = np.zeros(0, dtype="float32")
+                        asyncio.ensure_future(on_wake())
+                        command_buffer = np.zeros(0, dtype="float32")
+                        silence_run = 0
+                        heard_speech = False
+                        command_deadline = time.monotonic() + self._config.command_timeout_seconds
+                        continue
+
                     matched = await asyncio.to_thread(self._spotter.is_match, rolling)
                     if not matched:
                         continue
@@ -452,6 +497,7 @@ class WakeWordListener:
 
     def stop(self) -> None:
         self._running = False
+        self._followup_deadline = 0.0
         if self._stream is not None:
             self._stream.stop()
             self._stream.close()

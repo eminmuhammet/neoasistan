@@ -43,6 +43,28 @@ from .theme import DARK_QSS
 
 logger = logging.getLogger(__name__)
 
+# Trailing punctuation/quotes a question can still end in before its "?" --
+# stripped off so "Hangi şehir?»" or 'devam edeyim mi?"' are still recognized.
+_TRAILING_CLOSERS = "\"'”’)»›」"
+
+
+def _expects_a_reply(text: str) -> bool:
+    """Whether `text` reads as NEO asking something back, rather than
+    simply answering.
+
+    Opening a follow-up listening window after every single reply meant
+    the microphone reopened even for plain statements that weren't waiting
+    on anything ("İşte hava durumu: ..."), which is exactly the "her
+    konuşma bittiğinde değil, benden cevap beklediğinde" distinction: the
+    window should only appear when NEO actually asked something and a
+    reply is the expected next thing to be said. A question mark, once
+    trailing quotes/parentheses are stripped, is the cheap signal already
+    on hand for that.
+    """
+    stripped = text.strip().rstrip(_TRAILING_CLOSERS)
+    return stripped.endswith("?")
+
+
 def build_about_text(wake_phrase: str = "Neo uyan") -> str:
     """Assembled from the live values rather than written out by hand.
 
@@ -1116,13 +1138,19 @@ class MainWindow(QMainWindow):
             finally:
                 self._speaking = False
 
-        if self._wake_listener is not None and self._wake_task is not None:
-            # Let a spoken follow-up skip the wake word: someone who just
-            # got an answer and wants to reply is speaking normally, not
-            # delivering the wake phrase with the clear diction it needs to
-            # be recognized -- expecting that on every turn is what made a
-            # back-and-forth feel like it required "perfect" pronunciation
-            # each time. See WakeWordListener.open_followup_window.
+        if (
+            self._wake_listener is not None
+            and self._wake_task is not None
+            and _expects_a_reply(reply)
+        ):
+            # Let a spoken follow-up skip the wake word -- but only when
+            # NEO actually asked something and is waiting on an answer, not
+            # after every reply. Someone answering a question NEO just
+            # asked is speaking normally, not delivering the wake phrase
+            # with the clear diction it needs to be recognized; expecting
+            # that on every turn is what made a back-and-forth feel like it
+            # required "perfect" pronunciation each time. See
+            # WakeWordListener.open_followup_window.
             self._wake_listener.open_followup_window()
 
         self._set_state(AgentState.IDLE)
