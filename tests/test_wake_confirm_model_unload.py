@@ -1,10 +1,15 @@
-"""The confirm model (see neo/voice/wake_word.py) has no other owner
-checking on it -- unlike the main STT model, which the GUI's idle timer
-unloads, this one used to stay resident in memory for as long as
-continuous listening was on, which for most users is "always". The fix
-was making WakeWordListener.run() check unload_if_idle() on its own confirm
-model every loop tick (cheap: a single monotonic-time comparison unless
-actually time to unload).
+"""The wake-phrase confirm model has to stay loaded while NEO is listening.
+
+This loop used to call unload_if_idle() on it every tick, freeing it after
+five idle minutes. But NEO idles for hours -- that is its normal state --
+so in practice every real wake-up became a cold start: the user said the
+phrase, the model started loading from disk, and seconds went by before
+anything was transcribed. Reported as "it never wakes up on the first try,
+only the second"; the second try worked because the first had loaded the
+model.
+
+Its memory is the price of a wake word that answers. NEO_WAKE_CONFIRM_MODEL
+is the knob for anyone who would rather pay less of it.
 """
 
 import asyncio
@@ -15,11 +20,10 @@ from neo.voice.wake_word import WakeWordListener
 
 
 class StubSpotter:
+    detection_window_seconds = 1.0
+
     def has_enough_templates(self, minimum=1):
         return True
-
-    def detection_window_seconds(self):
-        return 1.0
 
 
 class StubSTT:
@@ -27,38 +31,68 @@ class StubSTT:
         return ""
 
 
-class CountingConfirmSTT:
+class RecordingConfirmSTT:
     def __init__(self) -> None:
         self.unload_calls = 0
+        self.preloads = 0
 
     def unload_if_idle(self, idle_seconds=300.0):
         self.unload_calls += 1
         return False
 
+    async def preload(self):
+        self.preloads += 1
+
     async def transcribe(self, audio):
         return ""
 
 
-def test_run_loop_checks_confirm_model_idle_unload_every_tick(monkeypatch):
-    confirm = CountingConfirmSTT()
-    spotter = StubSpotter()
-    # detection_window_seconds is a plain attribute on the real class, not
-    # a method -- match that here.
-    spotter.detection_window_seconds = 1.0
-    listener = WakeWordListener(spotter, StubSTT(), wake_phrase="Neo uyan", confirm_stt=confirm)
-
+def _run(confirm, wake_phrase="Neo uyan", monkeypatch=None):
+    listener = WakeWordListener(
+        StubSpotter(), StubSTT(), wake_phrase=wake_phrase, confirm_stt=confirm
+    )
     monkeypatch.setattr(listener, "_open_stream", lambda: None)
 
-    call_count = {"n": 0}
+    ticks = {"n": 0}
 
     def fake_collect_chunk(num_samples):
-        call_count["n"] += 1
-        if call_count["n"] >= 3:
+        ticks["n"] += 1
+        if ticks["n"] >= 3:
             listener._running = False
         return np.zeros(0, dtype="float32")
 
     monkeypatch.setattr(listener, "_collect_chunk", fake_collect_chunk)
 
-    asyncio.run(listener.run(on_wake=lambda: None, on_command=lambda text: None))
+    async def on_wake():
+        pass
 
-    assert confirm.unload_calls >= 3
+    async def on_command(text):
+        pass
+
+    asyncio.run(listener.run(on_wake, on_command))
+    return listener
+
+
+def test_the_confirm_model_is_never_unloaded_while_listening(monkeypatch):
+    confirm = RecordingConfirmSTT()
+    _run(confirm, monkeypatch=monkeypatch)
+
+    assert confirm.unload_calls == 0
+
+
+def test_the_confirm_model_is_loaded_before_the_first_wake_attempt(monkeypatch):
+    """Loading takes seconds. Paying that on the session's first wake puts
+    the delay exactly where the user is waiting for an answer."""
+    confirm = RecordingConfirmSTT()
+    _run(confirm, monkeypatch=monkeypatch)
+
+    assert confirm.preloads == 1
+
+
+def test_nothing_is_preloaded_when_confirmation_is_disabled(monkeypatch):
+    """An empty wake phrase turns confirmation off, so there is no model to
+    pay for."""
+    confirm = RecordingConfirmSTT()
+    _run(confirm, wake_phrase="", monkeypatch=monkeypatch)
+
+    assert confirm.preloads == 0

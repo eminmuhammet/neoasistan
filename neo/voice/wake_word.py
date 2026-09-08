@@ -222,6 +222,38 @@ class WakeWordListener:
         logger.info("Uyandırma penceresi: %.2f sn", window_seconds)
         silence_gap_samples = int(self._config.end_of_command_silence_seconds * SAMPLE_RATE)
 
+        # Loaded up front and then kept, for as long as continuous listening
+        # is on, because every wake-up depends on it.
+        #
+        # This loop used to call unload_if_idle() on the confirm model every
+        # tick, which freed it after five idle minutes. NEO idles for hours,
+        # so in practice every real wake-up was a cold start: the user said
+        # the phrase, the model began loading from disk, and seconds passed
+        # before anything was even transcribed. That is exactly the reported
+        # "it never wakes on the first try, only the second" -- the second
+        # try worked because the first one had loaded the model. Its memory
+        # is the price of a wake word that answers; NEO_WAKE_CONFIRM_MODEL
+        # is the knob for anyone who would rather pay less of it.
+        if self._confirm_stt is not None and self._wake_phrase:
+            await self._confirm_stt.preload()
+
+        # Printed once per session so a wake word that "just doesn't work"
+        # can be told apart from one whose enrollment never separated the
+        # phrase from ordinary speech -- the difference decides whether to
+        # tune thresholds or re-record, and nothing in the log said which.
+        # Read defensively: a diagnostic must never be the reason waking up
+        # stops working.
+        separation = getattr(self._spotter, "separation", None)
+        logger.info(
+            "Uyandırma kalibrasyonu: %s örnek, %s olumsuz, eşik %s, ayrışma %s%s",
+            getattr(self._spotter, "template_count", "?"),
+            getattr(self._spotter, "negative_count", "?"),
+            f"{getattr(self._spotter, 'threshold', float('nan')):.1f}",
+            f"{separation:.1f}" if separation is not None else "yok",
+            "" if getattr(self._spotter, "is_calibrated", True)
+            else "  [ZAYIF: yeniden öğretmek gerekebilir]",
+        )
+
         rolling = np.zeros(0, dtype="float32")
         command_buffer: np.ndarray | None = None
         silence_run = 0
@@ -233,17 +265,6 @@ class WakeWordListener:
         try:
             while self._running:
                 try:
-                    # The confirm model has no other owner or timer checking
-                    # on it (unlike the main STT model, which the GUI's idle
-                    # timer unloads) -- left unmanaged, the first wake-phrase
-                    # confirmation of the session loads it and it then sits
-                    # resident in memory for as long as continuous listening
-                    # stays on, which for most users is "always". Cheap to
-                    # check every loop tick: it's a single monotonic-time
-                    # comparison unless actually time to unload.
-                    if self._confirm_stt is not None:
-                        self._confirm_stt.unload_if_idle()
-
                     if is_muted is not None and is_muted():
                         # NEO is speaking: don't listen to our own voice
                         # coming back through the microphone.

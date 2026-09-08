@@ -1,182 +1,117 @@
-"""The wake-up cue: spoken acknowledgements ("Dinliyorum efendim.") cached to
-disk, with a plain-tone fallback. Module-level cache state is reset around
-each test since chime.py tracks readiness globally by design (the cache
-outlives any single object)."""
+"""The activation cue's defining constraint is its length, not its sound.
+
+NEO mutes the microphone while the cue plays and drains whatever queued up,
+because that audio has the cue bleeding into it from the speakers. So the
+cue's duration is subtracted directly from the front of the user's command.
+
+The cue used to be a spoken "Dinliyorum efendim." at 2 seconds, and users --
+who start talking the moment the screen says "Dinliyor" -- lost the first two
+seconds of every command: "bana neler yapabildiğini anlat" reached the
+recognizer as "yapabildiğini anlat".
+"""
 
 import asyncio
+import io
+import wave
 
-import pytest
+import numpy as np
 
 from neo.voice import chime
 
-
-@pytest.fixture(autouse=True)
-def reset_module_state():
-    chime._cache_dir = None
-    chime._ready.clear()
-    yield
-    chime._cache_dir = None
-    chime._ready.clear()
+# Comfortably longer than the current cue, far shorter than the spoken one
+# it replaced. A cue that grows past this is back to eating commands.
+MAX_CUE_SECONDS = 0.9
 
 
-def test_configure_sets_the_cache_dir(tmp_path):
-    chime.configure(tmp_path)
-    assert chime._cache_dir == tmp_path / "cues"
+def _tone_wav() -> bytes:
+    """The fallback tone as a WAV, so the audio checks below can read it
+    with the stdlib rather than reaching into numpy internals."""
+    pcm = (np.clip(chime._render_tone(), -1.0, 1.0) * 32767.0).astype("<i2")
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(chime._SAMPLE_RATE)
+        out.writeframes(pcm.tobytes())
+    return buffer.getvalue()
 
 
-def test_prepare_cues_without_configure_does_nothing():
-    """configure() is called once at startup; a missing call must not crash
-    the prepare step, just leave the fallback tone as the only cue."""
-    asyncio.run(chime.prepare_cues())
-    assert chime._ready == []
+def test_the_cue_is_short_enough_not_to_eat_the_command():
+    assert chime.cue_seconds() <= MAX_CUE_SECONDS
 
 
-def test_prepare_cues_synthesizes_missing_files(tmp_path, monkeypatch):
-    chime.configure(tmp_path)
-    saved = []
+def test_the_rendered_audio_matches_the_declared_length():
+    """cue_seconds() is what the "keep it short" guarantee is checked
+    against, so it has to describe the audio actually played."""
+    with wave.open(io.BytesIO(_tone_wav())) as w:
+        seconds = w.getnframes() / w.getframerate()
 
-    class FakeCommunicate:
-        def __init__(self, text, voice):
-            self.text = text
-
-        async def save(self, path):
-            saved.append((self.text, path))
-            with open(path, "wb") as f:
-                f.write(b"fake-mp3-bytes")
-
-    monkeypatch.setattr(
-        "edge_tts.Communicate", FakeCommunicate, raising=False
-    )
-    import sys
-    import types
-
-    fake_module = types.SimpleNamespace(Communicate=FakeCommunicate)
-    monkeypatch.setitem(sys.modules, "edge_tts", fake_module)
-
-    asyncio.run(chime.prepare_cues())
-
-    assert len(chime._ready) == len(chime.CUE_PHRASES)
-    assert len(saved) == len(chime.CUE_PHRASES)
-    for path in chime._ready:
-        assert path.exists()
-        assert path.stat().st_size > 0
+    assert abs(seconds - chime.cue_seconds()) < 0.02
 
 
-def test_prepare_cues_skips_already_synthesized_files(tmp_path, monkeypatch):
-    """Restarting NEO shouldn't re-synthesize cues that already exist on
-    disk from a previous run."""
-    chime.configure(tmp_path)
-    (tmp_path / "cues").mkdir(parents=True)
-    existing = tmp_path / "cues" / "cue_0.mp3"
-    existing.write_bytes(b"already-there")
-
-    calls = []
-
-    class FakeCommunicate:
-        def __init__(self, text, voice):
-            calls.append(text)
-
-        async def save(self, path):
-            with open(path, "wb") as f:
-                f.write(b"new-bytes")
-
-    import sys
-    import types
-
-    monkeypatch.setitem(
-        sys.modules, "edge_tts", types.SimpleNamespace(Communicate=FakeCommunicate)
-    )
-
-    asyncio.run(chime.prepare_cues())
-
-    assert chime.CUE_PHRASES[0] not in calls
-    assert existing.read_bytes() == b"already-there"
+def test_the_cue_is_playable_pcm():
+    with wave.open(io.BytesIO(_tone_wav())) as w:
+        assert w.getnchannels() == 1
+        assert w.getsampwidth() == 2
+        assert w.getnframes() > 0
 
 
-def test_prepare_cues_is_idempotent_across_repeated_calls(tmp_path, monkeypatch):
-    """Calling prepare_cues() twice (e.g. two starts within one process)
-    must not duplicate entries in the ready list -- that would silently
-    skew which cue gets picked."""
-    chime.configure(tmp_path)
+def test_the_cue_does_not_clip():
+    """Rendered as floats and scaled before quantizing; a cue that clipped
+    would buzz."""
+    import numpy as np
 
-    class FakeCommunicate:
-        def __init__(self, text, voice):
-            pass
+    with wave.open(io.BytesIO(_tone_wav())) as w:
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
 
-        async def save(self, path):
-            with open(path, "wb") as f:
-                f.write(b"bytes")
-
-    import sys
-    import types
-
-    monkeypatch.setitem(
-        sys.modules, "edge_tts", types.SimpleNamespace(Communicate=FakeCommunicate)
-    )
-
-    asyncio.run(chime.prepare_cues())
-    first_count = len(chime._ready)
-    asyncio.run(chime.prepare_cues())
-
-    assert len(chime._ready) == first_count == len(chime.CUE_PHRASES)
+    assert int(np.abs(pcm).max()) < 32767
 
 
-def test_prepare_cues_without_edge_tts_leaves_ready_empty(tmp_path, monkeypatch):
-    import builtins
+def test_the_cue_starts_and_ends_silent():
+    """Without an envelope the abrupt edges click, which is what made the
+    old winsound.Beep cue sound like a BIOS error."""
+    import numpy as np
 
-    real_import = builtins.__import__
+    with wave.open(io.BytesIO(_tone_wav())) as w:
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
 
-    def blocked(name, *a, **k):
-        if name == "edge_tts":
-            raise ImportError("yok")
-        return real_import(name, *a, **k)
-
-    monkeypatch.setattr(builtins, "__import__", blocked)
-    chime.configure(tmp_path)
-
-    asyncio.run(chime.prepare_cues())
-
-    assert chime._ready == []
+    peak = int(np.abs(pcm).max())
+    assert abs(int(pcm[0])) < peak * 0.05
+    assert abs(int(pcm[-1])) < peak * 0.05
 
 
-def test_play_activation_chime_uses_a_ready_file(tmp_path, monkeypatch):
-    chime.configure(tmp_path)
-    fake = tmp_path / "cue_0.mp3"
-    fake.write_bytes(b"x")
-    chime._ready.append(fake)
+def test_the_spoken_cue_is_used_when_one_has_been_prepared(monkeypatch):
+    """The synthesized word is cached as trimmed PCM, so waking NEO costs no
+    network round trip and no decode."""
+    spoken = np.zeros(int(chime._SAMPLE_RATE * 0.4), dtype=np.float32)
+    monkeypatch.setattr(chime, "_cue_audio", spoken)
 
     played = []
-    monkeypatch.setattr(chime, "_play_file", lambda path: played.append(path))
-
+    monkeypatch.setattr(chime, "_play", lambda a: played.append(a))
     asyncio.run(chime.play_activation_chime())
 
-    assert played == [fake]
+    assert len(played) == 1
+    assert played[0] is spoken
+    assert chime.cue_seconds() <= MAX_CUE_SECONDS
 
 
-def test_play_activation_chime_falls_back_when_nothing_ready(monkeypatch):
-    toned = []
-    monkeypatch.setattr(chime, "_fallback_tone", lambda: toned.append(True))
+def test_the_tone_is_used_when_no_spoken_cue_was_prepared(monkeypatch):
+    """First run with no network must still acknowledge the wake word."""
+    monkeypatch.setattr(chime, "_cue_audio", None)
 
+    played = []
+    monkeypatch.setattr(chime, "_play", lambda a: played.append(a))
     asyncio.run(chime.play_activation_chime())
 
-    assert toned == [True]
+    assert len(played) == 1
+    assert played[0].size > 0
 
 
-def test_play_activation_chime_falls_back_on_playback_failure(tmp_path, monkeypatch):
-    """A corrupted or locked cue file must not leave the user with silence
-    instead of at least the fallback tone."""
-    chime.configure(tmp_path)
-    fake = tmp_path / "cue_0.mp3"
-    fake.write_bytes(b"x")
-    chime._ready.append(fake)
+def test_playback_failure_never_propagates(monkeypatch):
+    """A machine with no working audio output must still be able to wake up."""
+    def boom(_data):
+        raise OSError("ses aygıtı yok")
 
-    def boom(path):
-        raise OSError("kilitli dosya")
+    monkeypatch.setattr(chime, "_play", boom)
 
-    toned = []
-    monkeypatch.setattr(chime, "_play_file", boom)
-    monkeypatch.setattr(chime, "_fallback_tone", lambda: toned.append(True))
-
-    asyncio.run(chime.play_activation_chime())
-
-    assert toned == [True]
+    asyncio.run(chime.play_activation_chime())  # must not raise

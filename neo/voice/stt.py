@@ -140,6 +140,18 @@ class WhisperSTT:
             return ""
         return text
 
+    async def preload(self) -> None:
+        """Loads the model now so the first real use doesn't wait for it.
+
+        Loading takes seconds, and for the wake-word confirmer that wait
+        lands squarely between the user saying the phrase and NEO reacting --
+        which reads as "it didn't hear me".
+        """
+        try:
+            await asyncio.to_thread(self._ensure_model)
+        except STTUnavailableError:
+            logger.info("Model önceden yüklenemedi, ilk kullanımda denenecek")
+
     async def transcribe(self, audio: Any) -> str:
         try:
             return await asyncio.to_thread(self._transcribe_sync, audio)

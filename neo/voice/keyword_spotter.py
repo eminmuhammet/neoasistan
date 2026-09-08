@@ -40,6 +40,33 @@ _POSITIVE_ONLY_MARGIN = 1.5
 # of an assistant that wakes up mid-conversation.
 _SEPARATION_BIAS = 0.35
 
+# The threshold must clear the enrolled spread by a real margin, even when
+# the negatives sit right on top of it.
+#
+# `spread` is the widest distance between any two enrolled takes, and with
+# MIN_TEMPLATES = 3 that is the widest of three pairs -- a small sample of
+# how much a voice varies, and one that systematically underestimates it.
+# Setting the threshold at or barely above that number means the fourth
+# time the user says the phrase, ordinary variation puts it outside, and
+# the wake word is rejected here without ever reaching confirmation. Live
+# calibration on this user read spread 29.6, nearest negative 30.8 -- a
+# separation of 1.2, about 4% -- so the threshold landed at 30.0, right on
+# the spread, and genuine attempts failed roughly half the time with
+# nothing logged.
+#
+# When the two groups overlap this much the acoustic matcher has already
+# shown it cannot tell them apart (see this class's docstring), so it is
+# not the thing being protected by a tight threshold. Its remaining job is
+# to keep recognition from running on silence, and the words themselves are
+# confirmed afterwards by the recognizer, which separates them cleanly.
+_MIN_SPREAD_HEADROOM = 1.25
+
+# Below this, the separation between the two groups is a rounding error
+# rather than evidence, and the widened threshold above applies. Above it,
+# the negatives really do stand apart and the tight threshold is kept --
+# loosening a calibration that works would only invite false wake-ups.
+_WEAK_SEPARATION_RATIO = 0.25
+
 # A wake word is one short word said on its own. These bound how far the
 # candidate's spoken length may drift from the enrolled recordings before it
 # is rejected regardless of how well DTW scores it -- duration is exactly
@@ -93,6 +120,7 @@ class KeywordSpotter:
         self._negatives: list[np.ndarray] = []
         self._threshold = float("inf")
         self._separation: float | None = None
+        self._spread: float | None = None
         self._load()
 
     # -- persistence -------------------------------------------------------
@@ -159,6 +187,7 @@ class KeywordSpotter:
         if len(self._templates) < 2:
             self._threshold = float("inf")
             self._separation = None
+            self._spread = None
             return
 
         spread = max(
@@ -167,6 +196,7 @@ class KeywordSpotter:
             for j in range(i + 1, len(self._templates))
         )
 
+        self._spread = spread
         if not self._negatives:
             self._threshold = spread * _POSITIVE_ONLY_MARGIN
             self._separation = None
@@ -182,7 +212,17 @@ class KeywordSpotter:
 
         self._separation = nearest_negative - spread
         if nearest_negative > spread:
-            self._threshold = spread + (nearest_negative - spread) * _SEPARATION_BIAS
+            tight = spread + (nearest_negative - spread) * _SEPARATION_BIAS
+            if self._separation < spread * _WEAK_SEPARATION_RATIO:
+                # The groups very nearly overlap, so this threshold is not
+                # separating anything -- but sitting on the spread does
+                # reject the user's own next attempt. Give genuine takes
+                # room and leave the verdict to confirmation.
+                self._threshold = max(tight, spread * _MIN_SPREAD_HEADROOM)
+            else:
+                # The negatives genuinely stand apart, so the acoustic gate
+                # is worth something here. Keep it tight.
+                self._threshold = tight
         else:
             # The two groups overlap: some ordinary speech resembles the wake
             # word more than the user's own takes resemble each other. No
@@ -221,8 +261,17 @@ class KeywordSpotter:
     @property
     def is_calibrated(self) -> bool:
         """True when the threshold rests on actual negative evidence rather
-        than on a margin picked out of the air."""
-        return bool(self._negatives) and self._separation is not None and self._separation > 0
+        than on a margin picked out of the air.
+
+        A separation merely greater than zero is not that evidence. This
+        user's enrollment measured 1.2 against a spread of 29.5 -- the two
+        groups were touching -- and the old test still called it calibrated,
+        so nothing ever suggested re-recording while the wake word kept
+        failing. It has to be a real fraction of the spread to count.
+        """
+        if not self._negatives or self._separation is None or self._spread is None:
+            return False
+        return self._separation >= self._spread * _WEAK_SEPARATION_RATIO
 
     @property
     def enrolled_duration(self) -> float | None:
@@ -354,7 +403,14 @@ class KeywordSpotter:
     def is_match(self, audio: np.ndarray) -> bool:
         """All the acoustic gating lives here rather than in the listening
         loop, because every check needs the enrolled recordings as reference
-        and they all read the same single VAD pass."""
+        and they all read the same single VAD pass.
+
+        Every rejection says which of the five gates stopped it. Without
+        that, a wake word that "just doesn't work" gave the logs nothing at
+        all to look at -- the loop simply went quiet -- and diagnosing it
+        was guesswork. The lines are one per candidate window, and only
+        windows loud enough to reach here produce any.
+        """
         if not self.has_enough_templates() or audio.size == 0:
             return False
 
@@ -367,23 +423,55 @@ class KeywordSpotter:
             spoken, detected = span
 
         if spoken.size == 0:
+            logger.info("Uyandırma elendi [kapı=sessiz: konuşma bulunamadı]")
             return False
+
+        window_seconds = audio.size / self._sample_rate
+        spoken_seconds = spoken.size / float(self._sample_rate)
 
         if detected is not None:
             if detected == 0.0:
                 # DTW compares shapes, so a door bump or key press can land
                 # close enough to a template to "match".
+                logger.info("Uyandırma elendi [kapı=VAD: konuşma yok, gürültü]")
                 return False
             # A wake phrase is said on its own. A window filled wall to wall
             # with speech is the middle of a sentence, not someone calling.
-            if detected / (audio.size / self._sample_rate) > _MAX_SPEECH_FRACTION:
+            fraction = detected / window_seconds
+            if fraction > _MAX_SPEECH_FRACTION:
+                logger.info(
+                    "Uyandırma elendi [kapı=süreklilik: pencerenin %%%.0f'i konuşma "
+                    "(üst sınır %%%.0f) -- cümle ortası sayıldı]",
+                    fraction * 100, _MAX_SPEECH_FRACTION * 100,
+                )
                 return False
 
-        if not self._duration_plausible(spoken.size / float(self._sample_rate)):
+        if not self._duration_plausible(spoken_seconds):
+            logger.info(
+                "Uyandırma elendi [kapı=süre: %.2f sn, kabul aralığı %.2f-%.2f sn "
+                "(öğretilen: %s)]",
+                spoken_seconds,
+                min(self._durations) * _MIN_DURATION_RATIO if self._durations else 0.0,
+                max(self._durations) * _MAX_DURATION_RATIO if self._durations else 0.0,
+                ", ".join(f"{d:.2f}" for d in self._durations) or "yok",
+            )
             return False
 
         features = normalize_features(extract_mfcc(spoken, self._sample_rate))
         if features.shape[0] == 0:
+            logger.info("Uyandırma elendi [kapı=öznitelik: MFCC çıkarılamadı]")
             return False
         distance = min(dtw_distance(features, template) for template in self._templates)
-        return distance <= self._threshold
+        if distance > self._threshold:
+            logger.info(
+                "Uyandırma elendi [kapı=DTW: uzaklık %.1f > eşik %.1f, süre %.2f sn]",
+                distance, self._threshold, spoken_seconds,
+            )
+            return False
+
+        logger.info(
+            "Uyandırma akustik eşleşme: uzaklık %.1f <= eşik %.1f (süre %.2f sn), "
+            "doğrulamaya gidiyor",
+            distance, self._threshold, spoken_seconds,
+        )
+        return True

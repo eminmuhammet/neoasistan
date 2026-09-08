@@ -139,15 +139,37 @@ OTHER_WORDS = [
 ]
 
 
-def _enrolled(path, with_negatives):
+# Words far enough from the wake takes that the two groups genuinely
+# separate. OTHER_WORDS deliberately sit close, which is the realistic case
+# and the one the weak-separation tests below use.
+FAR_WORDS = [
+    _word([1800, 300], 0.50),
+    _word([250, 2200, 400], 0.70),
+    _word([2000, 2400, 1900], 0.60),
+]
+
+# Takes recorded consistently, so the spread stays small and FAR_WORDS end
+# up a long way outside it.
+CONSISTENT_TAKES = [
+    _padded(_word([600, 900, 500, 1400], 1.00, jitter=j)) for j in (0.0, 0.005, -0.005)
+]
+
+
+def _enrolled(path, with_negatives, takes=None, negatives=None):
     spotter = KeywordSpotter(path)
-    for take in WAKE_TAKES:
+    for take in takes or WAKE_TAKES:
         assert spotter.enroll(take) is True
     if with_negatives:
         spotter.enroll_negative(
-            np.concatenate([_padded(w, total=1.8, offset=0.3) for w in OTHER_WORDS])
+            np.concatenate(
+                [_padded(w, total=1.8, offset=0.3) for w in (negatives or OTHER_WORDS)]
+            )
         )
     return spotter
+
+
+def _well_separated(path):
+    return _enrolled(path, True, takes=CONSISTENT_TAKES, negatives=FAR_WORDS)
 
 
 def test_negative_calibration_tightens_the_threshold(tmp_path):
@@ -158,14 +180,52 @@ def test_negative_calibration_tightens_the_threshold(tmp_path):
     tight = _enrolled(tmp_path / "b.npz", with_negatives=True)
 
     assert tight.threshold < loose.threshold
-    assert tight.is_calibrated is True
+    assert tight.negative_count > 0
     assert loose.is_calibrated is False
 
 
-def test_calibrated_spotter_rejects_other_words(tmp_path):
-    spotter = _enrolled(tmp_path / "t.npz", with_negatives=True)
-    for word in OTHER_WORDS:
+def test_calibration_is_only_claimed_when_the_groups_really_separate(tmp_path):
+    """`is_calibrated` drives the "your enrollment is weak, re-record"
+    warning, so it has to mean the evidence is real.
+
+    Any separation above zero used to count. Live enrollment measured a
+    separation of 1.2 against a spread of 29.5 -- the wake takes and
+    ordinary speech were touching -- and it still reported calibrated, so
+    nothing ever suggested re-recording while the wake word kept failing.
+    """
+    weak = _enrolled(tmp_path / "weak.npz", with_negatives=True)
+    strong = _well_separated(tmp_path / "strong.npz")
+
+    assert weak.is_calibrated is False
+    assert strong.is_calibrated is True
+
+
+def test_a_well_separated_spotter_rejects_other_words(tmp_path):
+    """When the negatives genuinely stand apart, the acoustic gate is worth
+    something and stays tight."""
+    spotter = _well_separated(tmp_path / "t.npz")
+    for word in FAR_WORDS:
         assert spotter.is_match(_padded(word)) is False
+
+
+def test_a_weak_calibration_keeps_room_for_the_users_own_takes(tmp_path):
+    """The threshold has to clear the enrolled spread even when the negatives
+    sit right on top of it.
+
+    `spread` is the widest of only three pairs, which underestimates how
+    much a voice varies. Placing the threshold on it meant the fourth time
+    the user said the phrase, ordinary variation fell outside and the wake
+    word was rejected here -- before confirmation ever ran, and with nothing
+    written to the log. Observed live as "it never wakes on the first try".
+
+    Lookalikes getting through this gate is the accepted cost: a spotter
+    this poorly separated was never rejecting them reliably anyway, and the
+    recognizer downstream separates the words cleanly.
+    """
+    spotter = _enrolled(tmp_path / "t.npz", with_negatives=True)
+
+    assert spotter.is_calibrated is False
+    assert spotter.threshold > spotter._spread
 
 
 def test_calibration_keeps_matching_the_real_wake_phrase(tmp_path):
@@ -202,7 +262,7 @@ def test_negatives_and_durations_persist_across_instances(tmp_path):
 
     reloaded = KeywordSpotter(path)
     assert reloaded.negative_count == spotter.negative_count
-    assert reloaded.is_calibrated is True
+    assert reloaded.is_calibrated == spotter.is_calibrated
     assert reloaded.threshold == expected
 
 
