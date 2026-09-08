@@ -544,14 +544,24 @@ class NeuroVisual(QWidget):
         pixmap = self._cached_pixmap
         if pixmap is None:
             return  # first frame not ready; parent background shows through
-        scaled = pixmap.scaled(
-            W, H,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        x = (W - scaled.width()) // 2
-        y = (H - scaled.height()) // 2
-        painter.drawPixmap(x, y, scaled)
+        if pixmap.width() == W and pixmap.height() == H:
+            # The common case now that frames are rendered at the widget's
+            # own size: blit it. Calling scaled() here would still allocate
+            # and copy the whole frame on every repaint to produce an
+            # identical image.
+            painter.drawPixmap(0, 0, pixmap)
+        else:
+            # Only while a resize is in flight and the cached frame is still
+            # the old size.
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            scaled = pixmap.scaled(
+                W, H,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            painter.drawPixmap(
+                (W - scaled.width()) // 2, (H - scaled.height()) // 2, scaled
+            )
         painter.end()
