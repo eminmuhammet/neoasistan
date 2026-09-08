@@ -150,5 +150,12 @@ def test_press_keys_rejects_empty_list(monkeypatch):
     "tool_cls",
     [cc.ClickTool, cc.MoveMouseTool, cc.DragTool, cc.TypeTextTool, cc.PressKeysTool],
 )
-def test_all_computer_control_tools_are_high_risk(tool_cls):
-    assert tool_cls.risk == RiskLevel.HIGH
+def test_all_computer_control_tools_are_medium_risk(tool_cls):
+    """MEDIUM, not HIGH: in helper mode these no longer confirm on every
+    single click/keystroke (a real multi-step automation like "search for
+    a song and hit play" was needing 4-6 separate approvals in a row,
+    see git history) -- the panic hotkey / screen-corner failsafe stays as
+    the actual safety net for automation, and HIGH is reserved for actions
+    that can't be undone by continuing to watch the screen (shutdown,
+    sending a real email)."""
+    assert tool_cls.risk == RiskLevel.MEDIUM

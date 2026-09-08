@@ -60,6 +60,44 @@ class OpenApplicationTool(Tool):
         return ToolResult(success=True, data={"launched": name})
 
 
+class PlayOnSpotifyTool(Tool):
+    name = "play_on_spotify"
+    description = (
+        "Spotify'da bir şarkı/sanatçı/albüm arar ve arama sonucunu açar. "
+        "Kullanıcının Spotify masaüstü uygulaması kurulu olsun olmasın "
+        "çalışır (web player kullanır) -- 'X şarkısını Spotify'da aç' gibi "
+        "isteklerde computer_control (fare/klavye) yerine bunu kullan; "
+        "otomasyon araçları bu iş için hem yavaş hem gereksiz risklidir."
+    )
+    risk = RiskLevel.LOW
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Aranacak şarkı/sanatçı/albüm adı (ör. 'Tarkan Kuzu Kuzu').",
+            }
+        },
+        "required": ["query"],
+    }
+
+    async def run(self, query: str, **kwargs: object) -> ToolResult:
+        query = (query or "").strip()
+        if not query:
+            return ToolResult(success=False, error="Aranacak şarkı/sanatçı adı boş olamaz.")
+
+        url = f"https://open.spotify.com/search/{quote_plus(query)}"
+        try:
+            opened = webbrowser.open(url)
+        except Exception:
+            logger.exception("Spotify araması açılamadı: %s", query)
+            opened = False
+
+        if not opened:
+            return ToolResult(success=False, error="Spotify açılamadı.")
+        return ToolResult(success=True, data={"query": query, "url": url})
+
+
 class OpenWebsiteTool(Tool):
     name = "open_website"
     description = (

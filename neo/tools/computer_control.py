@@ -45,9 +45,9 @@ class ClickTool(Tool):
     description = (
         "Ekranda belirtilen (x, y) koordinatına fare ile tıklar. Önce "
         "capture_screen ile ekrana bakıp doğru koordinatı belirle. Sadece "
-        "yardımcı modunda ve her seferinde kullanıcı onayıyla çalışır."
+        "yardımcı modunda çalışır."
     )
-    risk = RiskLevel.HIGH
+    risk = RiskLevel.MEDIUM
     input_schema = {
         "type": "object",
         "properties": {
@@ -80,7 +80,7 @@ class ClickTool(Tool):
 class MoveMouseTool(Tool):
     name = "move_mouse"
     description = "Fareyi tıklamadan sadece belirtilen (x, y) koordinatına götürür."
-    risk = RiskLevel.HIGH
+    risk = RiskLevel.MEDIUM
     input_schema = {
         "type": "object",
         "properties": {
@@ -109,7 +109,7 @@ class DragTool(Tool):
         "konumuna sürükler (ör. bir dosyayı sürükle-bırak, bir kaydırıcıyı "
         "hareket ettirmek için)."
     )
-    risk = RiskLevel.HIGH
+    risk = RiskLevel.MEDIUM
     input_schema = {
         "type": "object",
         "properties": {
@@ -153,7 +153,7 @@ class TypeTextTool(Tool):
         "Doğru alana odaklanıldığından emin olmak için önce click ile o "
         "alana tıkla."
     )
-    risk = RiskLevel.HIGH
+    risk = RiskLevel.MEDIUM
     input_schema = {
         "type": "object",
         "properties": {
@@ -181,7 +181,7 @@ class PressKeysTool(Tool):
         "['ctrl', 'c'] kopyalamak için, ['enter'] Enter'a basmak için, "
         "['alt', 'tab'] pencere değiştirmek için."
     )
-    risk = RiskLevel.HIGH
+    risk = RiskLevel.MEDIUM
     input_schema = {
         "type": "object",
         "properties": {

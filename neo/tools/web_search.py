@@ -1,44 +1,56 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import html
 import logging
 import re
+from urllib.parse import parse_qs, urlparse
 
 from .base import RiskLevel, Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 
-# DuckDuckGo's HTML-only endpoint (no JS, no API key) -- built for exactly
-# this: a plain HTML results page meant for text browsers/lite clients,
-# unlike the JS-heavy main site which has nothing stable to scrape. This
-# replaces Anthropic's server-side web_search tool (which bills per search
-# on top of tokens) with a free one, see agent.py's WEB_SEARCH_TOOL removal.
-_SEARCH_URL = "https://html.duckduckgo.com/html/"
+# Originally scraped DuckDuckGo's HTML-only endpoint (no JS, no API key --
+# built for exactly this). Switched to Bing after a live test from this
+# user's connection timed out on every DuckDuckGo host (html.duckduckgo.com,
+# lite.duckduckgo.com, even the plain duckduckgo.com homepage) while Google
+# and Bing both answered normally -- DuckDuckGo has a known history of ISP
+# blocks in Turkey. Bing's plain (JS-off) results page still needs no API
+# key and no login, so the free/local goal (see agent.py's WEB_SEARCH_TOOL
+# removal) is unaffected.
+_SEARCH_URL = "https://www.bing.com/search"
 
-_RESULT_BLOCK_RE = re.compile(
-    r'<a[^>]*class="result__a"[^>]*href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>'
-    r'.*?<a[^>]*class="result__snippet"[^>]*>(?P<snippet>.*?)</a>',
+# Bing wraps every organic result's href in its own click-tracking redirect
+# (bing.com/ck/a?...&u=a1<base64url of the real target>&...) rather than
+# linking to it directly -- decoded here so the tool result (and fetch_page,
+# if Claude follows up on it) gets a URL that's actually fetchable.
+_RESULT_RE = re.compile(
+    r'<h2[^>]*>\s*<a[^>]*href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>\s*</h2>'
+    r'\s*<div class="b_caption"><p[^>]*>(?P<snippet>.*?)</p>',
     re.DOTALL,
 )
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _clean_text(html_fragment: str) -> str:
-    return re.sub(r"\s+", " ", _TAG_RE.sub("", html_fragment)).strip()
+    return html.unescape(re.sub(r"\s+", " ", _TAG_RE.sub("", html_fragment))).strip()
 
 
-def _unwrap_redirect(url: str) -> str:
-    """DuckDuckGo's HTML results link through its own redirector
-    (//duckduckgo.com/l/?uddg=<encoded target>&...) rather than the real
-    target -- unwrapped here so the tool result gives Claude (and
-    fetch_page) a URL that's actually fetchable."""
-    if "uddg=" not in url:
+def _decode_bing_redirect(url: str) -> str:
+    url = html.unescape(url)
+    parsed = urlparse(url)
+    if not parsed.netloc.endswith("bing.com") or parsed.path != "/ck/a":
         return url
-    from urllib.parse import parse_qs, unquote, urlparse
-
-    query = parse_qs(urlparse(url).query)
-    target = query.get("uddg")
-    return unquote(target[0]) if target else url
+    encoded = parse_qs(parsed.query).get("u", [None])[0]
+    if not encoded or not encoded.startswith("a1"):
+        return url
+    body = encoded[2:]
+    body += "=" * (-len(body) % 4)
+    try:
+        return base64.urlsafe_b64decode(body).decode("utf-8", errors="replace")
+    except Exception:
+        return url
 
 
 class WebSearchTool(Tool):
@@ -70,10 +82,15 @@ class WebSearchTool(Tool):
         import httpx
 
         try:
-            response = httpx.post(
+            response = httpx.get(
                 _SEARCH_URL,
-                data={"q": query},
-                headers={"User-Agent": "Mozilla/5.0 (compatible; NEO-assistant/1.0)"},
+                params={"q": query},
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+                    )
+                },
                 timeout=10.0,
             )
             response.raise_for_status()
@@ -82,19 +99,17 @@ class WebSearchTool(Tool):
             return ToolResult(success=False, error="Web araması şu an yapılamıyor.")
 
         results = []
-        for match in _RESULT_BLOCK_RE.finditer(response.text):
+        for match in _RESULT_RE.finditer(response.text):
             results.append(
                 {
                     "title": _clean_text(match.group("title")),
-                    "url": _unwrap_redirect(match.group("url")),
+                    "url": _decode_bing_redirect(match.group("url")),
                     "snippet": _clean_text(match.group("snippet")),
                 }
             )
             if len(results) >= max_results:
                 break
 
-        if not results:
-            return ToolResult(success=True, data={"query": query, "results": [], "count": 0})
         return ToolResult(
             success=True, data={"query": query, "results": results, "count": len(results)}
         )

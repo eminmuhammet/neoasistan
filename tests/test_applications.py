@@ -1,7 +1,8 @@
 import asyncio
 from unittest.mock import patch
 
-from neo.tools.applications import OpenApplicationTool, OpenWebsiteTool
+from neo.tools.applications import OpenApplicationTool, OpenWebsiteTool, PlayOnSpotifyTool
+from neo.tools.base import RiskLevel
 
 
 def test_open_application_unknown_returns_error():
@@ -48,3 +49,35 @@ def test_open_website_reports_failure():
     with patch("neo.tools.applications.webbrowser.open", return_value=False):
         result = asyncio.run(tool.run(site="google"))
     assert not result.success
+
+
+def test_play_on_spotify_opens_a_search_url():
+    """Works whether or not the Spotify desktop app is installed -- see
+    the tool's docstring: this exists specifically so a request like 'X
+    şarkısını Spotify'da aç' doesn't fall through to computer_control
+    (mouse/keyboard automation), which is slower, HIGH-risk, and was
+    observed failing outright when Spotify wasn't even installed."""
+    tool = PlayOnSpotifyTool()
+    with patch("neo.tools.applications.webbrowser.open", return_value=True) as mock_open:
+        result = asyncio.run(tool.run(query="Tarkan Kuzu Kuzu"))
+
+    assert result.success
+    assert result.data["url"] == "https://open.spotify.com/search/Tarkan+Kuzu+Kuzu"
+    mock_open.assert_called_once()
+
+
+def test_play_on_spotify_rejects_empty_query():
+    tool = PlayOnSpotifyTool()
+    result = asyncio.run(tool.run(query="   "))
+    assert not result.success
+
+
+def test_play_on_spotify_reports_failure():
+    tool = PlayOnSpotifyTool()
+    with patch("neo.tools.applications.webbrowser.open", return_value=False):
+        result = asyncio.run(tool.run(query="bir şey"))
+    assert not result.success
+
+
+def test_play_on_spotify_is_low_risk():
+    assert PlayOnSpotifyTool.risk == RiskLevel.LOW

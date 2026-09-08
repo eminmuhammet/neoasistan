@@ -100,10 +100,14 @@ gibi sorular hiç kayda geçmiyordu).
 
 - **LOW**: her zaman izinli.
 - **MEDIUM**: yardımcı modunda otomatik onaylı, asistan modunda kullanıcı
-  onayı ister (ör. ekrana bakma, belge okuma).
+  onayı ister (ör. ekrana bakma, belge okuma, fare/klavye kontrolü). Fare/
+  klavye araçları (`computer_control.py`) kasıtlı olarak burada — her tek
+  tıklama/tuş için ayrı onay istemek çok adımlı bir otomasyonu kullanılamaz
+  hale getiriyordu; panik tuşu (Ctrl+Alt+Shift+Q) ve fareyi ekran köşesine
+  götürme hâlâ her an devreye giriyor.
 - **HIGH**: asistan modunda tamamen reddedilir; yardımcı modunda bile HER
-  SEFERİNDE onay ister (mesaj gönderme, fare/klavye kontrolü gibi geri
-  alınamaz/hassas eylemler için kasıtlı — MEDIUM gibi otomatik geçmez).
+  SEFERİNDE onay ister — ekranı izleyerek geri alınamayacak eylemler için
+  (kapatma/yeniden başlatma, gerçek bir e-posta gönderme).
 
 Yeni bir tool eklerken risk seviyesini "ne geri alınamaz / kimin gözünden
 kaçabilir" sorusuna göre seç, sadece "ne kadar tehlikeli hissettiriyor"a göre

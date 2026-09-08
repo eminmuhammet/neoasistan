@@ -25,7 +25,7 @@ from .memory.document_index import DocumentIndex
 from .memory.preference_store import PreferenceStore
 from .memory.scheduled_job_store import ScheduledJobStore
 from .memory.task_store import TaskStore
-from .tools.applications import OpenApplicationTool, OpenWebsiteTool
+from .tools.applications import OpenApplicationTool, OpenWebsiteTool, PlayOnSpotifyTool
 from .tools.audit import GetRecentActivityTool
 from .tools.base import ToolRegistry
 from .tools.calendar import (
@@ -90,6 +90,7 @@ def build_registry(settings: Settings) -> ToolRegistry:
     registry.register(GetDateTool())
     registry.register(OpenApplicationTool())
     registry.register(OpenWebsiteTool())
+    registry.register(PlayOnSpotifyTool())
     registry.register(GetSystemInfoTool())
     registry.register(GetCpuUsageTool())
     registry.register(GetRamUsageTool())
