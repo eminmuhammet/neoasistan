@@ -13,7 +13,7 @@ import os
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
-datas = []
+datas = [("neo_logo.png", ".")]
 binaries = []
 hiddenimports = [
     "win32com.client",
