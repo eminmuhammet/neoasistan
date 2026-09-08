@@ -195,12 +195,7 @@ class MainWindow(QMainWindow):
         self._chat_toggle_button.setChecked(False)
         self._chat_toggle_button.setToolTip("Sohbet panelini göster/gizle")
         self._chat_toggle_button.clicked.connect(self._on_chat_toggle_clicked)
-        info_button = QPushButton("ℹ")
-        info_button.setObjectName("InfoButton")
-        info_button.setToolTip("NEO hakkında")
-        info_button.clicked.connect(self._on_info_clicked)
         header_layout.addWidget(self._chat_toggle_button)
-        header_layout.addWidget(info_button)
         outer_layout.addWidget(header)
 
         # ── Content row: [left filler] [sphere] [chat panel] ─────────────

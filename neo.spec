@@ -114,6 +114,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="NEO",
+    icon="neo.ico",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

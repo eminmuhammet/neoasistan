@@ -68,10 +68,10 @@ from .tools.system_info import (
     GetSystemInfoTool,
 )
 from .tools.time_tools import GetDateTool, GetTimeTool
-from .voice import chime
 from .tools.weather import GetWeatherTool
 from .ui.main_window import MainWindow
 from .ui.mode_unlock_dialog import request_helper_mode_unlock
+from .voice import chime
 from .voice.keyword_spotter import KeywordSpotter
 from .voice.microphone import PushToTalkRecorder
 from .voice.stt import WhisperSTT
@@ -351,8 +351,8 @@ def main() -> int:
     # never delay startup; a failure here is silent by design.
     loop.create_task(window.check_for_update())
 
-    # Wake-up cues are synthesized once and cached, so hearing "Dinliyorum
-    # efendim" doesn't cost a network round trip every time NEO is woken.
+    # Synthesized once and cached, so waking NEO never waits on a network
+    # round trip to hear that it was heard.
     chime.configure(settings.data_dir)
     loop.create_task(chime.prepare_cues())
 

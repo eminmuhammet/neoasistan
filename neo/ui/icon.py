@@ -2,82 +2,118 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import (
+    QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient,
+)
 
 
-def _hexagon_path(center: QPointF, radius: float) -> QPainterPath:
+def _hex_path(cx: float, cy: float, r: float) -> QPainterPath:
     path = QPainterPath()
     for i in range(6):
         angle = math.radians(60 * i - 90)
-        point = QPointF(
-            center.x() + radius * math.cos(angle),
-            center.y() + radius * math.sin(angle),
-        )
+        pt = QPointF(cx + r * math.cos(angle), cy + r * math.sin(angle))
         if i == 0:
-            path.moveTo(point)
+            path.moveTo(pt)
         else:
-            path.lineTo(point)
+            path.lineTo(pt)
     path.closeSubpath()
     return path
 
 
+def _hex_pts(cx: float, cy: float, r: float) -> list[QPointF]:
+    return [
+        QPointF(cx + r * math.cos(math.radians(60 * i - 90)),
+                cy + r * math.sin(math.radians(60 * i - 90)))
+        for i in range(6)
+    ]
+
+
 def build_app_icon(size: int = 64) -> QIcon:
-    """Matches NEO's brand mark: a glowing green hexagon frame around an "N"
-    whose right stroke doubles as an upward arrow -- drawn procedurally so
-    the app ships no external image asset for the window/taskbar/tray icon.
-    """
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
+    """NEO brand mark: glowing hex + N-arrow + 'NEO' text, drawn procedurally."""
+    px = QPixmap(size, size)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    s = float(size)
+    cx, cy = s / 2, s / 2
+    GREEN = QColor("#39ff7a")
+    BG    = QColor("#060d08")
 
-    center = QPointF(size / 2.0, size / 2.0)
-    hex_radius = size * 0.46
-    green = QColor("#35e08a")
+    r_hex  = s * 0.455
+    r_fill = s * 0.415
 
-    # Dark hexagon fill behind everything.
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor("#06120c"))
-    painter.drawPath(_hexagon_path(center, hex_radius))
+    # Soft radial glow behind hex
+    rg = QRadialGradient(cx, cy, r_hex * 1.1)
+    rg.setColorAt(0.0, QColor(40, 120, 60, 55))
+    rg.setColorAt(1.0, QColor(0, 0, 0, 0))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(rg)
+    p.drawEllipse(QRectF(cx - r_hex*1.2, cy - r_hex*1.2, r_hex*2.4, r_hex*2.4))
 
-    # Glowing hexagon outline.
-    pen = QPen(green)
-    pen.setWidthF(size * 0.045)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.drawPath(_hexagon_path(center, hex_radius * 0.92))
+    # Hex dark fill
+    p.setBrush(BG)
+    p.drawPath(_hex_path(cx, cy, r_hex))
 
-    # "N" strokes, sized to sit inside the hexagon with room for the arrowhead.
-    n_pen = QPen(green)
-    n_pen.setWidthF(size * 0.09)
-    n_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    n_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(n_pen)
+    # Hex border — glow in 3 layers
+    for width, alpha in [(s*0.09, 30), (s*0.048, 90), (s*0.022, 255)]:
+        c = QColor(GREEN); c.setAlpha(alpha)
+        pen = QPen(c); pen.setWidthF(width)
+        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(_hex_path(cx, cy, r_fill))
 
-    left_x = size * 0.35
-    right_x = size * 0.62
-    top_y = size * 0.62
-    bottom_y = size * 0.34
+    # Corner dots on hex vertices
+    p.setPen(Qt.PenStyle.NoPen)
+    for pt in _hex_pts(cx, cy, r_fill):
+        p.setBrush(GREEN);  p.drawEllipse(pt, s*0.022, s*0.022)
+        p.setBrush(BG);     p.drawEllipse(pt, s*0.011, s*0.011)
 
-    painter.drawLine(QPointF(left_x, size * 0.66), QPointF(left_x, size * 0.30))
-    painter.drawLine(QPointF(left_x, size * 0.30), QPointF(right_x, size * 0.62))
-    painter.drawLine(QPointF(right_x, size * 0.62), QPointF(right_x, size * 0.24))
+    # ── N + arrow — N spans upper 55% of hex interior ──────────────────────
+    # The icon is square; put N in the top portion and NEO text in bottom 30%
+    n_left  = cx - s * 0.155
+    n_right = cx + s * 0.135
+    n_top   = cy - s * 0.240   # top of N strokes
+    n_bot   = cy + s * 0.035   # bottom of N strokes
 
-    # Arrowhead capping the right stroke, reading as "N" rising into an
-    # upward arrow -- the brand's growth motif.
-    arrow_tip = QPointF(right_x, size * 0.16)
+    arrow_tip_y   = n_top - s * 0.055
+    arrow_spread  = s * 0.065
+    arrow_base_y  = n_top + s * 0.060
+
+    stroke_w = s * 0.062
+    for width, alpha in [(stroke_w*2.0, 25), (stroke_w*1.4, 70), (stroke_w, 255)]:
+        c = QColor(GREEN); c.setAlpha(alpha)
+        pen = QPen(c); pen.setWidthF(width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.drawLine(QPointF(n_left,  n_bot), QPointF(n_left,  n_top))
+        p.drawLine(QPointF(n_left,  n_top), QPointF(n_right, n_bot))
+        p.drawLine(QPointF(n_right, n_bot), QPointF(n_right, arrow_base_y))
+
+    # Arrowhead (filled triangle)
     arrow_path = QPainterPath()
-    spread = size * 0.09
-    arrow_path.moveTo(arrow_tip)
-    arrow_path.lineTo(right_x - spread, size * 0.16 + spread)
-    arrow_path.lineTo(right_x + spread, size * 0.16 + spread)
+    arrow_path.moveTo(QPointF(n_right, arrow_tip_y))
+    arrow_path.lineTo(QPointF(n_right - arrow_spread, arrow_base_y))
+    arrow_path.lineTo(QPointF(n_right + arrow_spread, arrow_base_y))
     arrow_path.closeSubpath()
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(green)
-    painter.drawPath(arrow_path)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(GREEN)
+    p.drawPath(arrow_path)
 
-    painter.end()
-    return QIcon(pixmap)
+    # ── "NEO" text in bottom third of hex ──────────────────────────────────
+    if size >= 32:
+        font_size = max(6, int(s * 0.130))
+        font = QFont("Arial", font_size, QFont.Weight.Bold)
+        p.setFont(font)
+        text_rect = QRectF(0, cy + s * 0.090, s, s * 0.170)
+        # Glow
+        for alpha in [40, 140, 255]:
+            c = QColor(GREEN); c.setAlpha(alpha)
+            p.setPen(QPen(c))
+            p.drawText(text_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, "NEO")
+
+    p.end()
+    return QIcon(px)
