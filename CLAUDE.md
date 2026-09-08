@@ -3,6 +3,36 @@
 Windows için Türkçe konuşan, sesli masaüstü yapay zekâ asistanı.
 Python + PySide6 + Claude API. Paketlenmiş `.exe` olarak dağıtılıyor.
 
+## KRİTİK: Bu repo aynı anda birden fazla oturumda açık olabilir
+
+Bu projede eş zamanlı olarak farklı Claude Code oturumları çalışabiliyor
+(örn. biri backend/V2 özellikleri, biri arayüz yeniden tasarımı üzerinde —
+bu dosyanın kendisi bile iki oturumun aynı anda yazmasıyla çakıştı).
+
+- **Her zaman** commit atmadan önce `git status` / `git diff` ile neyin
+  değiştiğini kontrol et — üzerinde çalışmadığın dosyalarda değişiklik
+  görürsen bu başka bir oturumun işidir, dokunma, geri alma.
+- **Asla `git add -A` kullanma.** Sadece kendi değiştirdiğin dosyaları açıkça
+  isimlendirerek stage et.
+- Bir dosya diğer oturum tarafından o an düzenleniyorsa geçici olarak
+  syntax hatası verebilir (yarım kayıt) — birkaç saniye bekleyip tekrar dene,
+  paniklemeyip dosyaya kendin dokunma.
+- Bir dosyanın "sahibi" belli değilse (örn. `neo/ui/*` bir arayüz oturumunda
+  aktif değişiyorsa), o dosyayı düzenlemek yerine gerekli değişikliği
+  (metot imzası, veri şekli) tarif edip diğer oturuma
+  `mcp__ccd_session_mgmt__send_message` ile ilet; `list_sessions` /
+  `list_events` ile diğer oturumların durumunu görebilirsin.
+- UI↔backend bağlantısı gerekiyorsa **post-hoc setter** deseni kullan
+  (`permissions.set_confirm(...)`, `mode_manager.set_on_change(...)`,
+  `planner.set_on_progress(...)`, `window.set_access_mode(...)` gibi) — bir
+  tarafın constructor imzasına bağımlı olmadan, ikisi de kendi hızında
+  ilerleyebilsin diye.
+- **EXE paketleme/kurulum işini kullanıcının açık onayı olmadan yapma** —
+  bu tek istisna, "her şeyi otomatik yap" gibi genel talimatlar bile bunu
+  geçersiz kılmaz.
+- Commit mesajı sonunda: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`.
+  PR açıklaması sonunda: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+
 ## Komutlar
 
 Sanal ortam `.venv`, **her zaman onun Python'ı kullanılmalı** (sistem
@@ -56,6 +86,31 @@ neo/
 **Import yönü kuralı: `neo.voice` asla `neo.config`'i import etmez.**
 Ters yön (`config` → `voice`) güvenli ve `settings.py` bunu kullanıyor.
 Bu yönü bozarsan döngüsel import çıkar.
+
+`core/` içindeki önemli parçalar: `Agent` (tool-use döngüsü),
+`PermissionManager` + `AccessModeManager` (asistan/yardımcı modu),
+`TaskPlanner` (planla→uygula→doğrula→**başarısızsa revize et**→devam et),
+`Scheduler` + `DiskSpaceWatcher` (proaktif görevler), `local_commands.py`
+(API'siz hızlı yol — saat/tarih gibi sık ve tek anlamlı sorular).
+
+**Araç çağırma akışı ve risk seviyeleri:** LLM `ToolRegistry`'deki bir aracı
+seçer → `PermissionManager.check` risk seviyesine göre onay ister/reddeder →
+`ToolRegistry.execute` çalıştırır ve kayıtlı **audit hook** üzerinden otomatik
+loglar. Loglama kasıtlı olarak Agent'ın kendi döngüsünde değil registry'de —
+böylece `local_commands.py`'nin hızlı yolu dahil TÜM çağıranlar kapsanıyor
+(bir dönem sadece Agent'ta loglanıyordu ve hızlı yoldan geçen "saat kaç?"
+gibi sorular hiç kayda geçmiyordu).
+
+- **LOW**: her zaman izinli.
+- **MEDIUM**: yardımcı modunda otomatik onaylı, asistan modunda kullanıcı
+  onayı ister (ör. ekrana bakma, belge okuma).
+- **HIGH**: asistan modunda tamamen reddedilir; yardımcı modunda bile HER
+  SEFERİNDE onay ister (mesaj gönderme, fare/klavye kontrolü gibi geri
+  alınamaz/hassas eylemler için kasıtlı — MEDIUM gibi otomatik geçmez).
+
+Yeni bir tool eklerken risk seviyesini "ne geri alınamaz / kimin gözünden
+kaçabilir" sorusuna göre seç, sadece "ne kadar tehlikeli hissettiriyor"a göre
+değil.
 
 ## Ses hattı — dikkat edilecekler
 
@@ -124,6 +179,15 @@ Bu kod tabanındaki yorumlar alışılmadık derecede kanıta dayalı: ölçüle
 değerler, log zaman damgaları, reddedilen alternatifler yazılı. Bir sabiti
 değiştirirken **neden o değer olduğunu** yaz, sadece ne yaptığını değil.
 Çevredeki üslubu koru.
+
+## Donanım kısıtları (yerel model/GPU işleri için önemli)
+
+Geliştirme makinesi: GTX 1650 (4GB VRAM), Intel i5-10300H (4 çekirdek/8 iş
+parçacığı), 15.8GB RAM. Yerel bir LLM/görsel model eklemeyi düşünürken bu
+sınırları hesaba kat — 4GB VRAM'e sığan modeller (3-8B, 4-bit) pratik üst
+sınır; büyük/kaliteli modeller bu donanımda gerçekçi değil. Whisper zaten
+CPU'da çalışıyor (`whisper_device=cpu` varsayılan) — GPU'yu sürekli tüketen
+tek şey render/composite tarafı, backend hiçbir şeyde sürekli GPU kullanmaz.
 
 ## Gizli veri
 
