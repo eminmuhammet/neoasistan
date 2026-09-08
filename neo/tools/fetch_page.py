@@ -61,6 +61,27 @@ class FetchPageTool(Tool):
                 follow_redirects=True,
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.warning("Sayfa reddedildi (%s): %s", exc.response.status_code, url)
+            # Distinct from a network failure on purpose: a live check found
+            # Wikipedia and openai.com both returning 403 to this tool no
+            # matter the User-Agent (Wikipedia's own body text points at
+            # its bot policy; openai.com looks Cloudflare-gated) -- this is
+            # the site refusing automated access, not a blip worth retrying
+            # the same URL for. Saying so explicitly is what stops a research
+            # turn from burning its whole tool-call budget hammering one
+            # blocked domain (see agent.py's RESEARCH_MODE_PROMPT).
+            if exc.response.status_code in (403, 429):
+                return ToolResult(
+                    success=False,
+                    error=(
+                        f"'{url}' otomatik erişimi engelliyor (HTTP {exc.response.status_code}). "
+                        "Bu adresi tekrar deneme, başka bir kaynağa geç."
+                    ),
+                )
+            return ToolResult(
+                success=False, error=f"'{url}' adresine ulaşılamadı (HTTP {exc.response.status_code})."
+            )
         except httpx.HTTPError:
             logger.exception("Sayfa indirilemedi: %s", url)
             return ToolResult(success=False, error=f"'{url}' adresine ulaşılamadı.")

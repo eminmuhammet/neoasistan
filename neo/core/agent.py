@@ -128,6 +128,17 @@ ARAŞTIRMA MODU AKTİF:
 olarak ele al.
 - web_search'ü bolca kullan, birden fazla kaynağı karşılaştır, çelişkileri \
 belirt, mümkün olduğunca resmi/akademik/güvenilir kaynakları önceliklendir.
+- Elindeki araç çağrısı sayısı SINIRLI (bu konuşma turu için birkaç adım). \
+web_search sonucundaki başlık+özet çoğu zaman yeterlidir; fetch_page'i \
+sadece gerçekten gerekli olduğunda ve HER url için EN FAZLA BİR KEZ dene.
+- fetch_page bir url için "otomatik erişimi engelliyor" ya da HTTP hatası \
+döndürürse O URL'İ TEKRAR DENEME -- bu sitenin bot erişimini reddettiği \
+anlamına gelir (Wikipedia ve birçok kurumsal site bunu yapar), ağ sorunu \
+değildir. Direkt farklı bir kaynağa geç.
+- "15 farklı kaynak" gibi kesin bir sayı istense bile buna harfiyen \
+takılma -- adım bütçen tükenmeden, eldeki güvenilir kaynaklarla iyi bir \
+özet vermek, hiç cevap verememekten (bütçe tükenip "tekrar dener misin" \
+demekten) her zaman iyidir.
 - Cevabın UZUN ve DETAYLI olsun; şu yapıyı kullan (düz metin):
 KONU / KISA ÖZET / ANA BULGULAR (numaralı) / DETAYLI ANALİZ / SONUÇ / \
 KAYNAKLAR (gerçek kaynak adları ve URL'leri).
