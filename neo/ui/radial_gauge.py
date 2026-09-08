@@ -12,7 +12,7 @@ class RadialGauge(QWidget):
     """A HUD-style circular arc gauge (colored progress arc + centered
     percentage + label) used for CPU/RAM/GPU instead of a flat progress bar."""
 
-    def __init__(self, label: str, color: str = "#23c9ff", parent: QWidget | None = None) -> None:
+    def __init__(self, label: str, color: str = "#39ff7a", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._label = label
         self._color = QColor(color)

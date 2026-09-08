@@ -19,7 +19,7 @@ from ..core.state import AgentState
 # old blue LISTENING made NEO look like a different application mid-sentence.
 # Error keeps red: it has to read as wrong at a glance, and that convention
 # outranks matching the palette.
-_LOGO_HUE = 0.416
+_LOGO_HUE = 0.388   # the logo's #39ff7a
 _STATE_HUE: dict[AgentState, float] = {
     AgentState.IDLE:       _LOGO_HUE,
     AgentState.LISTENING:  0.448,  # cooler green, still unmistakably green
@@ -55,24 +55,29 @@ _STATE_TICK_MS: dict[AgentState, int] = {
     # Idle is where NEO spends nearly all of its life, and the idle sphere
     # turns at 0.0002 rad/ms -- 10 fps is visually indistinguishable there
     # and costs a third of a core instead of half of one.
-    AgentState.IDLE:       100,
-    AgentState.LISTENING:  40,
-    AgentState.PROCESSING: 33,
-    AgentState.SPEAKING:   33,
-    AgentState.ERROR:      100,
+    AgentState.IDLE:       120,  # ~8 fps
+    AgentState.LISTENING:  50,
+    AgentState.PROCESSING: 45,
+    AgentState.SPEAKING:   45,   # ~22 fps, which is what a frame costs
+    AgentState.ERROR:      120,
 }
 
 # Camera/projection constants
 _CAM_DIST    = 3.2   # perspective camera distance (sphere radius = 1)
-_CLIP_SCALE  = 0.80  # sphere fills 80 % of widget height in clip space
+# How much of the frame the sphere itself spans. The glow reaches well
+# past the particles -- the wide bloom alone is a 20 px radius -- so the
+# sphere has to leave that much margin or the halo runs into the edge of
+# the buffer and stops dead, which showed up as the animation being cut off
+# against an invisible box.
+_CLIP_SCALE  = 0.72
 
 # Measured at 680 px: scattering 4 000 particles costs 2.8 ms and 60 000
 # costs 7.9 ms, while a single blur pass costs 7-14 ms no matter how many
 # particles produced the image. Density is therefore nearly free and
 # resolution is not -- and density is what the sphere was short of. At
 # 4 000 the shell read as scattered specks ("144p"); this many fills it.
-_N_SPHERE    = 60000
-_N_STARS     = 900   # background star field (fixed, no rotation)
+_N_SPHERE    = 40000
+_N_STARS     = 700   # background star field (fixed, no rotation)
 
 # Rendered 1:1 with the widget so nothing is ever upscaled -- the old fixed
 # 600 px buffer was stretched to the widget's 680 px and that soft, slightly
@@ -186,6 +191,34 @@ def _box_blur1(img: np.ndarray, r: int) -> np.ndarray:
         return (cs[tuple(hi)] - cs[tuple(lo)]) / k
 
     return _blur_axis(_blur_axis(img, img.ndim - 1), 0)
+
+
+def _glow_ramp(colour: np.ndarray) -> np.ndarray:
+    """256 colours from background to white-hot, as (256, 3) floats 0-255.
+
+    A glow that scales one colour by brightness is a straight line through
+    colour space, and it looks flat -- which is most of what still read as
+    cheap after the sphere was dense and sharp. Real emission shifts hue as
+    it gets hotter: deep and saturated where it is dim, the material's own
+    colour in the middle, desaturating to white at the core. Three stops
+    are enough to get that, and since this only ever fills a lookup table
+    it costs nothing per frame.
+    """
+    deep = colour * 0.55                       # dim: darker, still saturated
+    mid  = colour                              # the logo's own green
+    hot  = colour + (1.0 - colour) * 0.50      # core: desaturated toward white
+
+    t = np.linspace(0.0, 1.0, 256, dtype=np.float32)[:, None]
+    # Two linear segments, joined at the middle stop.
+    lower = deep[None, :] + (mid - deep)[None, :] * (t / 0.55)
+    upper = mid[None, :] + (hot - mid)[None, :] * ((t - 0.55) / 0.45)
+    ramp = np.where(t < 0.55, lower, upper)
+
+    # Brightness still rises across the whole range; the stops above only
+    # decide the hue at each level.
+    ramp = ramp * t
+
+    return np.clip(_BG[None, :] * 255.0 + ramp * (_GLOW_RANGE * 255.0), 0.0, 255.0)
 
 
 def _wide_bloom(img: np.ndarray, S: int, factor: int = 4) -> np.ndarray:
@@ -449,9 +482,12 @@ class NeuroVisual(QWidget):
         # outline is what reads as "hollow sphere" -- shading by depth alone
         # lit the middle and left the thing looking like a flat disc of
         # confetti no matter how the particles were distributed.
-        rim   = (1.0 - np.abs(ndir[:, 2])) ** 1.7
+        rim   = (1.0 - np.abs(ndir[:, 2])) ** 1.5
         front = 0.32 + 0.68 * depth       # back hemisphere sits behind
-        shade = (0.05 + 0.95 * rim) * front
+        # The floor is what the shell's face reads as. Too low and the
+        # middle is an empty hole with specks in it rather than a surface
+        # turned away from you.
+        shade = (0.13 + 0.87 * rim) * front
 
         # Shading rides in the intensity, so colour stays uniform and is
         # applied once after the blur.
@@ -480,7 +516,10 @@ class NeuroVisual(QWidget):
         # identical and half the cost.
         g2 = _wide_bloom(buf, S)
 
-        glow = g1 * (11.0 + 8.0 * av) + g2 * (5.0 + 5.0 * av)
+        # Gains kept low enough that the rim lands mid-ramp, on the logo's
+        # own green. Driving it to the top of the ramp blew the silhouette
+        # out to flat white and lost the colour entirely.
+        glow = g1 * (8.0 + 5.5 * av) + g2 * (3.4 + 3.4 * av)
         colour = _hsv_to_rgb(hue % 1.0, sat, np.array([1.0], np.float32))[0]
 
         # Colourize through a 256-entry lookup table rather than a full
@@ -489,11 +528,7 @@ class NeuroVisual(QWidget):
         # gather -- 18 ms of broadcast, clip and float-to-byte conversion
         # down to about 5 ms, which is what pays for the extra particles.
         lut = np.empty((256, 4), dtype=np.uint8)
-        levels = np.linspace(0.0, _GLOW_RANGE, 256, dtype=np.float32)
-        lut[:, :3] = np.clip(
-            _BG[None, :] * 255.0 + levels[:, None] * (colour * 255.0)[None, :],
-            0.0, 255.0,
-        ).astype(np.uint8)
+        lut[:, :3] = _glow_ramp(colour)
         lut[:, 3] = 255
 
         # Quantized over 0.._GLOW_RANGE rather than 0..1 so the brightest

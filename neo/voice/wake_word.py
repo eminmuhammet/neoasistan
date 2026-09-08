@@ -237,6 +237,16 @@ class WakeWordListener:
         if self._confirm_stt is not None and self._wake_phrase:
             await self._confirm_stt.preload()
 
+        # The command model is the larger one and is not needed until after
+        # a wake word, a cue and a spoken command have gone by -- so it is
+        # warmed in the background rather than delaying the moment listening
+        # starts. Loading it lazily instead put its several seconds directly
+        # between the user finishing their first command and NEO reacting,
+        # which read on screen as "Dinliyor" hanging and then a long think.
+        preload = getattr(self._stt, "preload", None)
+        if preload is not None:
+            asyncio.ensure_future(preload())
+
         # Printed once per session so a wake word that "just doesn't work"
         # can be told apart from one whose enrollment never separated the
         # phrase from ordinary speech -- the difference decides whether to

@@ -39,3 +39,27 @@ def test_about_uses_the_configured_wake_phrase():
 
 def test_about_does_not_claim_a_stale_roadmap_position():
     assert "Phase" not in build_about_text()
+
+
+def test_the_info_button_is_actually_wired_into_the_header():
+    """The dialog is unreachable without the button that opens it.
+
+    The header was rebuilt for a new logo and the ℹ button was dropped in
+    the process, leaving _on_info_clicked orphaned: every test here kept
+    passing -- they all call build_about_text() directly -- while the user
+    had no way to open the dialog at all.
+    """
+    source = SOURCE.read_text(encoding="utf-8")
+
+    assert 'QPushButton("ℹ")' in source, "başlıkta ℹ butonu yok"
+    assert "clicked.connect(self._on_info_clicked)" in source, "ℹ butonu bağlı değil"
+
+
+def test_about_lists_what_neo_can_actually_do():
+    """It advertised a handful of tools long after there were dozens, so the
+    one screen explaining NEO undersold it."""
+    text = build_about_text()
+
+    for capability in ("takvim", "posta", "hava durumu", "ekran görüntüsü",
+                       "ses seviyesi", "zamanla"):
+        assert capability.lower() in text.lower(), f"eksik: {capability}"

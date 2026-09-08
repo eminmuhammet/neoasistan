@@ -27,7 +27,7 @@ QLineEdit {
 }
 
 QLineEdit:focus {
-    border: 1px solid #2fa8e0;
+    border: 1px solid #39ff7a;
 }
 
 QPushButton {
@@ -54,9 +54,9 @@ QPushButton:disabled {
 }
 
 QPushButton:checked {
-    background-color: #113042;
-    border: 1px solid #2fa8e0;
-    color: #2fa8e0;
+    background-color: #0d2a1b;
+    border: 1px solid #39ff7a;
+    color: #39ff7a;
 }
 
 QPushButton#InfoButton {
@@ -149,8 +149,8 @@ QScrollArea#ChatScrollArea QScrollBar::sub-line:vertical {
 }
 
 QFrame#BubbleUser {
-    background-color: #12222e;
-    border: 1px solid #2fa8e0;
+    background-color: #10241a;
+    border: 1px solid #2f9c62;
     border-radius: 14px;
 }
 

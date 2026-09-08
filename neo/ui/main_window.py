@@ -52,13 +52,43 @@ def build_about_text(wake_phrase: str = "Neo uyan") -> str:
     that nothing had happened.
     """
     return f"""<h3>NEO</h3>
-<p>Windows için kişisel yapay zekâ masaüstü asistanı.</p>
-<p><b>Yapabildiklerim (API'siz):</b> saat/tarih, CPU/RAM/GPU/disk durumu,
-hava durumu, takvim notları, uygulama/web sitesi açma, günaydın özeti.</p>
-<p><b>İnternet gerektirenler:</b> genel sohbet, web araştırması, karmaşık
-istekler.</p>
-<p><b>Sesli kontrol:</b> 🎙 basılı tutup konuş, ya da "🎓 Neo'yu öğret" ile
-sesini öğretip "{wake_phrase}" diyerek uyandır.</p>
+<p>Windows için kişisel yapay zekâ masaüstü asistanı. Doğal dille konuş,
+gerisini o halleder.</p>
+
+<p><b>Sesli kontrol</b><br>
+🎙 düğmesini basılı tutup konuş, ya da "🎓 Neo'yu öğret" ile sesini
+öğretip "{wake_phrase}" diyerek uyandır. Uyandıktan sonra komutunu
+söylemen yeterli, tuşa basman gerekmez.</p>
+
+<p><b>Bilgisayarında yapabildiklerim</b><br>
+• Saat, tarih<br>
+• CPU / RAM / GPU / disk / ağ durumu ve sistem bilgisi<br>
+• Uygulama ve web sitesi açma, klasör açma, dosya bulma<br>
+• Belge okuma; klasör indeksleyip içerikte arama<br>
+• Ses seviyesi, sessize alma, medya oynat/duraklat<br>
+• Ekran görüntüsü alma<br>
+• Bilgisayarı kilitleme, yeniden başlatma, kapatma</p>
+
+<p><b>Günlük işler</b><br>
+• Takvim notu ekleme, okuma, güncelleme, silme (Google Takvim ile eşitlenir)<br>
+• Gmail: son postaları okuma, taslak oluşturma, e-posta gönderme<br>
+• Hava durumu<br>
+• Tercihlerini hatırlama ("beni sabah 8'de uyandır" gibi şeyleri saklar)<br>
+• Görev zamanlama, zamanlanmışları listeleme ve iptal etme<br>
+• Çok adımlı görevleri planlayıp yürütme<br>
+• Yaptıklarımın kaydını sana gösterme</p>
+
+<p><b>Yetki kipleri</b><br>
+Normal kipte yalnızca güvenli işleri yaparım. Fare/klavye kontrolü gibi
+yüksek riskli işler "yardımcı kipi" gerektirir ve her çağrıda ayrıca
+onayını isterim. Otomasyonu her an
+<b>Ctrl+Alt+Shift+Q</b> ile durdurabilirsin.</p>
+
+<p><b>İnternet gerektirenler</b><br>
+Genel sohbet, web araştırması ve karmaşık istekler. Saat, sistem durumu,
+uygulama açma gibi işler internetsiz de çalışır. Konuşma tanıma ve
+uyandırma kelimesi tamamen bilgisayarında, çevrimdışı çalışır.</p>
+
 <p style="color:#7c8b98;">Sürüm {__version__} · Emin İLHAN</p>
 """
 
@@ -92,7 +122,7 @@ STATE_LABELS = {
 
 _STATE_LABEL_COLOR = {
     AgentState.IDLE:       "#35e08a",
-    AgentState.LISTENING:  "#4db8ff",
+    AgentState.LISTENING:  "#6effa8",
     AgentState.PROCESSING: "#f2b134",
     AgentState.SPEAKING:   "#35e08a",
     AgentState.ERROR:      "#e05050",
@@ -199,6 +229,11 @@ class MainWindow(QMainWindow):
         self._chat_toggle_button.setToolTip("Sohbet panelini göster/gizle")
         self._chat_toggle_button.clicked.connect(self._on_chat_toggle_clicked)
         header_layout.addWidget(self._chat_toggle_button)
+        info_button = QPushButton("ℹ")
+        info_button.setObjectName("InfoButton")
+        info_button.setToolTip("NEO hakkında")
+        info_button.clicked.connect(self._on_info_clicked)
+        header_layout.addWidget(info_button)
         outer_layout.addWidget(header)
 
         # ── Content row: [left filler] [sphere] [chat panel] ─────────────
@@ -237,7 +272,7 @@ class MainWindow(QMainWindow):
         self._task_label = QLabel()
         self._task_label.setObjectName("StatusLabel")
         self._task_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._task_label.setStyleSheet("color: #4db8ff; font-size: 11px;")
+        self._task_label.setStyleSheet("color: #6effa8; font-size: 11px;")
         self._task_label.hide()
         sphere_col_layout.addWidget(self._task_label)
 
@@ -846,12 +881,25 @@ class MainWindow(QMainWindow):
                 # Never claim this worked when the numbers say it didn't --
                 # the user would spend the evening wondering why NEO keeps
                 # waking up mid-sentence.
+                # The number alone told the user nothing actionable, and
+                # "pozitif olmalı" was outright wrong once the bar became a
+                # fraction of the spread rather than zero: a separation of
+                # 5.3 is positive and still far too small. Say what the two
+                # numbers mean and what actually helps.
+                spread = getattr(self._spotter, "_spread", None)
+                measured = (
+                    f"(ayrışma {self._spotter.separation:.1f}, "
+                    f"kendi kayıtlarının yayılımı {spread:.1f})"
+                    if spread else f"(ayrışma {self._spotter.separation:.1f})"
+                )
                 self._append(
                     "NEO",
                     f"Öğrenme tamamlandı ama '{self._wake_phrase}' ile normal "
-                    "konuşman yeterince ayrışmadı "
-                    f"(ayrışma {self._spotter.separation:.1f}, pozitif olmalı)."
-                    f"{detail} Yanlış tetiklenme olabilir.",
+                    f"konuşman yeterince ayrışmadı {measured}.{detail} "
+                    "Uyandırma yine de çalışır — kararı ses tanıma veriyor — "
+                    "ama yanlış tetiklenme olabilir. Tekrar öğretirken "
+                    "ifadeyi her seferinde aynı hız ve tonda söylemek "
+                    "ayrışmayı en çok artıran şey.",
                 )
             self._set_state(AgentState.IDLE)
         finally:

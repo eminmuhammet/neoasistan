@@ -40,8 +40,8 @@ class StatsPanel(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(12)
 
-        self._cpu_gauge = RadialGauge("CPU", color="#23c9ff")
-        self._ram_gauge = RadialGauge("RAM", color="#35e08a")
+        self._cpu_gauge = RadialGauge("CPU", color="#39ff7a")
+        self._ram_gauge = RadialGauge("RAM", color="#1fc76a")
         self._gpu_gauge = RadialGauge("GPU", color="#f2b134")
         for gauge in (self._cpu_gauge, self._ram_gauge, self._gpu_gauge):
             layout.addWidget(gauge)
