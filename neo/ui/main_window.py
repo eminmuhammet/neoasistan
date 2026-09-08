@@ -229,6 +229,11 @@ class MainWindow(QMainWindow):
         self._chat_toggle_button.setToolTip("Sohbet panelini göster/gizle")
         self._chat_toggle_button.clicked.connect(self._on_chat_toggle_clicked)
         header_layout.addWidget(self._chat_toggle_button)
+        info_button = QPushButton("ℹ")
+        info_button.setObjectName("InfoButton")
+        info_button.setToolTip("NEO hakkında")
+        info_button.clicked.connect(self._on_info_clicked)
+        header_layout.addWidget(info_button)
         outer_layout.addWidget(header)
 
         # ── Content row: [left filler] [sphere] [chat panel] ─────────────
@@ -468,8 +473,16 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _quit_from_tray(self) -> None:
-        self._quitting = True
-        self.close()
+        # Used to be self._quitting = True; self.close() -- that ran
+        # closeEvent's cleanup (stops TTS/mic/wake loop) but, same as
+        # _shutdown's own docstring explains for the updater path, closing
+        # the window alone never stops qasync's asyncio loop. The process
+        # stayed alive with no window and no tray icon, still holding the
+        # single-instance mutex -- so "Çıkış" appeared to work, but the next
+        # launch attempt just hit "NEO zaten çalışıyor" with no visible NEO
+        # anywhere to actually quit. _shutdown() does the same close() first
+        # and then guarantees the process actually ends.
+        self._shutdown()
 
     async def confirm_action(self, tool_name: str, description: str) -> bool:
         """Wired into PermissionManager as the confirm callback for
