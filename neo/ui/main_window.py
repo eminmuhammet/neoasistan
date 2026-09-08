@@ -1116,6 +1116,15 @@ class MainWindow(QMainWindow):
             finally:
                 self._speaking = False
 
+        if self._wake_listener is not None and self._wake_task is not None:
+            # Let a spoken follow-up skip the wake word: someone who just
+            # got an answer and wants to reply is speaking normally, not
+            # delivering the wake phrase with the clear diction it needs to
+            # be recognized -- expecting that on every turn is what made a
+            # back-and-forth feel like it required "perfect" pronunciation
+            # each time. See WakeWordListener.open_followup_window.
+            self._wake_listener.open_followup_window()
+
         self._set_state(AgentState.IDLE)
         # Hide subtitle a moment after speech ends so the last words are readable
         QTimer.singleShot(3000, self._subtitle_label.hide)
