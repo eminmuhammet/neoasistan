@@ -76,3 +76,48 @@ def test_load_or_create_token_generates_different_tokens_for_different_files(tmp
     token_b = load_or_create_token(tmp_path / "b.txt")
 
     assert token_a != token_b
+
+
+# -- mobile page / PWA (see neo/web/mobile_ui.py) ----------------------------
+
+
+def test_mobile_page_is_served_without_a_token():
+    """A plain Safari navigation can't attach the x-neo-token header, so the
+    page shell itself must not require one -- only the actual actions
+    (/status, /message) stay gated."""
+    client = _client(token="secret")
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "NEO" in response.text
+
+
+def test_manifest_is_served_for_add_to_home_screen():
+    client = _client(token="secret")
+
+    response = client.get("/manifest.json")
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "NEO"
+    assert response.json()["icons"][0]["src"] == "/icon.png"
+
+
+def test_service_worker_is_served():
+    client = _client(token="secret")
+
+    response = client.get("/sw.js")
+
+    assert response.status_code == 200
+    assert "javascript" in response.headers["content-type"]
+
+
+def test_icon_is_a_real_png():
+    client = _client(token="secret")
+
+    response = client.get("/icon.png")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content[:8] == b"\x89PNG\r\n\x1a\n"

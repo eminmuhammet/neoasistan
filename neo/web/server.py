@@ -44,8 +44,36 @@ def build_app(agent: MessageHandler, token: str):
     (and its tests) need fastapi, keeping it out of every other module's
     import graph."""
     from fastapi import FastAPI, Header, HTTPException
+    from fastapi.responses import HTMLResponse, Response
+
+    from .mobile_ui import MANIFEST_JSON, PAGE_HTML, SERVICE_WORKER_JS, build_icon_png
 
     app = FastAPI(title="NEO Panel", docs_url=None, redoc_url=None)
+    _icon_cache: dict[str, bytes] = {}
+
+    # No token on these: the page shell, manifest, icon and service worker
+    # are not sensitive (nothing here can act on the user's behalf) --
+    # gating them behind the header token would just break "open this URL
+    # in Safari" and "Add to Home Screen", which can't attach headers to a
+    # plain navigation. The token still guards every real action (/status,
+    # /message).
+    @app.get("/", response_class=HTMLResponse)
+    async def mobile_page() -> str:
+        return PAGE_HTML
+
+    @app.get("/manifest.json")
+    async def manifest() -> Response:
+        return Response(content=MANIFEST_JSON, media_type="application/manifest+json")
+
+    @app.get("/sw.js")
+    async def service_worker() -> Response:
+        return Response(content=SERVICE_WORKER_JS, media_type="application/javascript")
+
+    @app.get("/icon.png")
+    async def icon() -> Response:
+        if "png" not in _icon_cache:
+            _icon_cache["png"] = build_icon_png()
+        return Response(content=_icon_cache["png"], media_type="image/png")
 
     def _require_token(x_neo_token: str | None) -> None:
         # Constant-time compare: this token is the only thing standing
