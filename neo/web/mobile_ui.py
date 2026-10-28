@@ -132,6 +132,7 @@ async function trySavedToken() {
   if (await checkToken(token)) {
     overlay.hidden = true;
     addSys('Bağlandı.');
+    subscribeToPush(token);
   }
 }
 
@@ -143,6 +144,7 @@ document.getElementById('tokenSave').addEventListener('click', async () => {
     localStorage.setItem('neo_token', token);
     overlay.hidden = true;
     addSys('Bağlandı.');
+    subscribeToPush(token);
   } else {
     tokenError.hidden = false;
   }
@@ -175,6 +177,46 @@ form.addEventListener('submit', async (e) => {
     sendBtn.disabled = false;
   }
 });
+
+function urlBase64ToUint8Array(base64) {
+  const padding = '='.repeat((4 - base64.length % 4) % 4);
+  const raw = atob((base64 + padding).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+async function subscribeToPush(token) {
+  // Web Push on iOS only exists for a PWA actually launched from the home
+  // screen (not a regular Safari tab), and only since 16.4 -- both show up
+  // here as simply "PushManager" missing, so this silently does nothing
+  // rather than erroring on an older iOS or a tab the user hasn't installed.
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  try {
+    const keyRes = await fetch('/vapid_public_key');
+    const keyData = await keyRes.json();
+    if (!keyData.available) return;
+
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') return;
+
+    const registration = await navigator.serviceWorker.ready;
+    let sub = await registration.pushManager.getSubscription();
+    if (!sub) {
+      sub = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(keyData.key),
+      });
+    }
+    await fetch('/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-neo-token': token },
+      body: JSON.stringify(sub.toJSON()),
+    });
+  } catch (err) {
+    // Best-effort: chat still works perfectly without push, so a failure
+    // here is never worth bothering the user about.
+    console.warn('Push aboneligi kurulamadi:', err);
+  }
+}
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -211,6 +253,28 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     fetch(event.request).catch(() => caches.match('/'))
   );
+});
+self.addEventListener('push', (event) => {
+  let title = 'NEO';
+  let body = '';
+  try {
+    const data = event.data ? event.data.json() : {};
+    title = data.title || title;
+    body = data.body || '';
+  } catch (err) {
+    body = event.data ? event.data.text() : '';
+  }
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon: '/icon.png',
+      badge: '/icon.png',
+    })
+  );
+});
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(clients.openWindow('/'));
 });
 """
 

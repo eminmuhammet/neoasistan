@@ -1,3 +1,4 @@
+from neo.web.push import PushSubscriptionStore
 from neo.web.server import build_app, load_or_create_token
 
 
@@ -10,10 +11,10 @@ class FakeAgent:
         return f"yanıt: {text}"
 
 
-def _client(token="test-token", agent=None):
+def _client(token="test-token", agent=None, push_store=None, vapid_public_key=None):
     from fastapi.testclient import TestClient
 
-    app = build_app(agent or FakeAgent(), token)
+    app = build_app(agent or FakeAgent(), token, push_store, vapid_public_key)
     return TestClient(app)
 
 
@@ -121,3 +122,79 @@ def test_icon_is_a_real_png():
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
     assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+# -- Web Push (see neo/web/push.py) ------------------------------------------
+
+
+def test_vapid_public_key_reports_unavailable_when_not_configured():
+    client = _client(token="secret")
+
+    response = client.get("/vapid_public_key")
+
+    assert response.status_code == 200
+    assert response.json() == {"available": False, "key": None}
+
+
+def test_vapid_public_key_is_served_without_a_token_when_configured():
+    client = _client(token="secret", vapid_public_key="fake-public-key")
+
+    response = client.get("/vapid_public_key")
+
+    assert response.json() == {"available": True, "key": "fake-public-key"}
+
+
+def test_subscribe_requires_a_token(tmp_path):
+    store = PushSubscriptionStore(tmp_path / "push.db")
+    client = _client(token="secret", push_store=store)
+
+    response = client.post(
+        "/subscribe",
+        json={"endpoint": "https://push.example/a", "keys": {"p256dh": "k", "auth": "a"}},
+    )
+
+    assert response.status_code == 401
+    assert store.list_all() == []
+
+
+def test_subscribe_stores_a_valid_subscription(tmp_path):
+    store = PushSubscriptionStore(tmp_path / "push.db")
+    client = _client(token="secret", push_store=store)
+
+    response = client.post(
+        "/subscribe",
+        json={"endpoint": "https://push.example/a", "keys": {"p256dh": "k", "auth": "a"}},
+        headers={"x-neo-token": "secret"},
+    )
+
+    assert response.status_code == 200
+    subs = store.list_all()
+    assert len(subs) == 1
+    assert subs[0].endpoint == "https://push.example/a"
+
+
+def test_subscribe_without_a_push_store_reports_unavailable():
+    client = _client(token="secret")  # no push_store
+
+    response = client.post(
+        "/subscribe",
+        json={"endpoint": "https://push.example/a", "keys": {"p256dh": "k", "auth": "a"}},
+        headers={"x-neo-token": "secret"},
+    )
+
+    assert response.status_code == 501
+
+
+def test_unsubscribe_removes_a_subscription(tmp_path):
+    store = PushSubscriptionStore(tmp_path / "push.db")
+    store.add("https://push.example/a", "k", "a")
+    client = _client(token="secret", push_store=store)
+
+    response = client.post(
+        "/unsubscribe",
+        json={"endpoint": "https://push.example/a"},
+        headers={"x-neo-token": "secret"},
+    )
+
+    assert response.status_code == 200
+    assert store.list_all() == []
