@@ -1,24 +1,22 @@
 from __future__ import annotations
 
-import math
-import random
+from functools import lru_cache
 
 import numpy as np
 import threading
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from ..core.state import AgentState
 
 # ── State parameters ──────────────────────────────────────────────────────
-# NEO's logo is green (#35e08a -> hue 0.416), and the sphere is the logo at
-# this size, so every state stays in that family. States separate by shade,
-# spin and brightness instead of by swapping to an unrelated colour -- the
-# old blue LISTENING made NEO look like a different application mid-sentence.
-# Error keeps red: it has to read as wrong at a glance, and that convention
-# outranks matching the palette.
+# NEO's logo is green (#35e08a -> hue 0.416), and this light is the logo at
+# this size, so every state stays in that family. States separate by shade
+# alone -- the old blue LISTENING made NEO look like a different application
+# mid-sentence. Error keeps red: it has to read as wrong at a glance, and
+# that convention outranks matching the palette.
 _LOGO_HUE = 0.388   # the logo's #39ff7a
 _STATE_HUE: dict[AgentState, float] = {
     AgentState.IDLE:       _LOGO_HUE,
@@ -34,75 +32,48 @@ _STATE_SAT: dict[AgentState, float] = {
     AgentState.SPEAKING:   0.72,
     AgentState.ERROR:      0.90,
 }
-_STATE_SPIN: dict[AgentState, float] = {
-    AgentState.IDLE:       0.00022,
-    AgentState.LISTENING:  0.00062,
-    AgentState.PROCESSING: 0.00090,
-    AgentState.SPEAKING:   0.00075,
-    AgentState.ERROR:      0.00015,
-}
-_STATE_BREATHE: dict[AgentState, float] = {
-    AgentState.IDLE:       0.0010,
-    AgentState.LISTENING:  0.0028,
-    AgentState.PROCESSING: 0.0045,
-    AgentState.SPEAKING:   0.0035,
-    AgentState.ERROR:      0.0010,
-}
-# A frame costs ~33 ms to render, so ticking faster than that only spins the
-# timer against a render that is already busy. 30 fps is the ceiling; idle
-# deliberately sits well under it to keep the machine quiet.
-_STATE_TICK_MS: dict[AgentState, int] = {
-    # Idle is where NEO spends nearly all of its life, and the idle sphere
-    # turns at 0.0002 rad/ms -- 10 fps is visually indistinguishable there
-    # and costs a third of a core instead of half of one.
-    AgentState.IDLE:       120,  # ~8 fps
-    AgentState.LISTENING:  50,
-    AgentState.PROCESSING: 45,
-    AgentState.SPEAKING:   45,   # ~22 fps, which is what a frame costs
-    AgentState.ERROR:      120,
-}
 
-# Camera/projection constants
-_CAM_DIST    = 3.2   # perspective camera distance (sphere radius = 1)
-# How much of the frame the sphere itself spans. The glow reaches well
-# past the particles -- the wide bloom alone is a 20 px radius -- so the
-# sphere has to leave that much margin or the halo runs into the edge of
-# the buffer and stops dead, which showed up as the animation being cut off
-# against an invisible box.
-_CLIP_SCALE  = 0.72
-
-# Density is cheap relative to blur (scattering scales with particle count,
-# blur doesn't), but it isn't free, and reports of stutter and sustained
-# GPU load meant the sphere was costing more than it was worth at 60 000.
-# This still reads as a dense shell -- the earlier "144p" complaint was
-# about 4 000 -- for noticeably less per-frame cost.
-_N_SPHERE    = 22000
-_N_STARS     = 500
-
-# Rendered 1:1 with the widget so nothing is ever upscaled -- the old fixed
-# 600 px buffer was stretched to the widget's 680 px and that soft, slightly
-# smeared result was most of what looked low-resolution. Capped because blur
-# cost grows with the square of this.
-_MIN_RENDER_SIZE = 480
+# Rendered 1:1 with the widget so nothing is ever upscaled. Capped mainly
+# to bound memory on very large/HiDPI displays.
+_MIN_RENDER_SIZE = 240
 _MAX_RENDER_SIZE = 1200
 
 # Upper end of the glow range the colour table covers. Above 1.0 so the
-# brightest cores still clip channel by channel and burn toward white.
+# brightest core still clips channel by channel and burns toward white.
 _GLOW_RANGE = 2.0
+
+# How far the light reaches, as a fraction of the widget's half-width.
+_CORE_RADIUS = 0.22
 
 # Background colour — exact match for app theme #060a08
 _BG = np.array([6 / 255, 10 / 255, 8 / 255], dtype=np.float32)
 
 
-def _rand_unit_sphere(n: int, rng: random.Random) -> np.ndarray:
-    """Uniformly distributed unit-sphere directions, shape (n, 3)."""
-    pts = []
-    while len(pts) < n:
-        x, y, z = (rng.gauss(0, 1), rng.gauss(0, 1), rng.gauss(0, 1))
-        r = math.sqrt(x*x + y*y + z*z)
-        if r > 1e-6:
-            pts.append((x/r, y/r, z/r))
-    return np.array(pts, dtype=np.float32)
+@lru_cache(maxsize=4)
+def _distance_grid(S: int) -> np.ndarray:
+    """Normalized distance from the centre (0 at centre, 1 at the widget's
+    edge), depending only on S -- cached because recomputing an 875x875
+    grid (np.mgrid + sqrt) from scratch cost ~37 ms on its own, and this
+    value never changes unless the widget itself is resized. lru_cache is
+    thread-safe for this read-mostly pattern, so it stays callable from
+    _render_frame's background thread without a lock.
+    """
+    cx = cy = (S - 1) * 0.5
+    yy, xx = np.mgrid[0:S, 0:S]
+    return np.sqrt((xx.astype(np.float32) - cx) ** 2
+                    + (yy.astype(np.float32) - cy) ** 2) / (S * 0.5)
+
+
+@lru_cache(maxsize=4)
+def _glow_shape(S: int) -> np.ndarray:
+    """The light's fixed intensity shape (tight core + soft halo), cached
+    per render size for the same reason as _distance_grid -- nothing about
+    its shape depends on state, so it is computed once rather than on
+    every render."""
+    dist = _distance_grid(S)
+    core = np.exp(-0.5 * (dist / (_CORE_RADIUS * 0.55)) ** 2)
+    halo = np.exp(-0.5 * (dist / (_CORE_RADIUS * 1.8)) ** 2)
+    return core * 1.4 + halo * 0.55
 
 
 def _hsv_to_rgb(h: float, s: float, v: np.ndarray) -> np.ndarray:
@@ -120,89 +91,15 @@ def _hsv_to_rgb(h: float, s: float, v: np.ndarray) -> np.ndarray:
     return np.stack([r0 + m, g0 + m, b0 + m], axis=1)
 
 
-def _splat(flat: np.ndarray, S: int, fx: np.ndarray, fy: np.ndarray,
-           weight: np.ndarray) -> None:
-    """Add particles to a flat (S*S,) intensity buffer with bilinear
-    sub-pixel weights.
-
-    Rounding each particle to its nearest pixel is what made the sphere look
-    pixelated: every dot became a hard-edged square that jittered by a whole
-    pixel as the sphere turned. Spreading the energy over the four
-    surrounding pixels gives sub-pixel positions, so dots are round and
-    motion is smooth.
-    """
-    x0 = np.floor(fx).astype(np.int32)
-    y0 = np.floor(fy).astype(np.int32)
-    m = (x0 >= 0) & (x0 < S - 1) & (y0 >= 0) & (y0 < S - 1)
-    if not m.any():
-        return
-    xi, yi = x0[m], y0[m]
-    wx = (fx[m] - xi).astype(np.float32)
-    wy = (fy[m] - yi).astype(np.float32)
-    a = weight[m].astype(np.float32)
-
-    base = yi.astype(np.int64) * S + xi
-    idx = np.concatenate([base, base + 1, base + S, base + S + 1])
-    w = np.concatenate([
-        a * (1.0 - wx) * (1.0 - wy),
-        a * wx * (1.0 - wy),
-        a * (1.0 - wx) * wy,
-        a * wx * wy,
-    ])
-    flat += np.bincount(idx, weights=w, minlength=S * S)
-
-
-def _box_blur1(img: np.ndarray, r: int) -> np.ndarray:
-    """Single-pass separable box blur. Output shape == input shape.
-
-    Works on a 2-D intensity map, which is how it is used: blurring one
-    channel instead of three is three times less cumsum, and the sphere is a
-    single hue anyway, so colour is applied once after the blur.
-    """
-    k = 2 * r + 1
-
-    def _blur_axis(a: np.ndarray, ax: int) -> np.ndarray:
-        N = a.shape[ax]
-        # Pre-allocate padded + zero-prepended buffer: size N+2r+1 along ax
-        shape = list(a.shape)
-        shape[ax] = N + 2 * r + 1
-        buf = np.empty(shape, dtype=np.float32)
-        sl0 = [slice(None)] * a.ndim
-        sl0[ax] = slice(0, 1)
-        buf[tuple(sl0)] = 0.0           # prepended zero
-        sl1 = [slice(None)] * a.ndim
-        sl1[ax] = slice(1, 1 + r)
-        src1 = [slice(None)] * a.ndim
-        src1[ax] = slice(0, 1)
-        buf[tuple(sl1)] = a[tuple(src1)]  # left/top edge pad
-        sl2 = [slice(None)] * a.ndim
-        sl2[ax] = slice(1 + r, 1 + r + N)
-        buf[tuple(sl2)] = a               # data
-        sl3 = [slice(None)] * a.ndim
-        sl3[ax] = slice(1 + r + N, None)
-        src3 = [slice(None)] * a.ndim
-        src3[ax] = slice(-1, None)
-        buf[tuple(sl3)] = a[tuple(src3)]  # right/bottom edge pad
-        cs = buf.cumsum(axis=ax)
-        hi = [slice(None)] * a.ndim
-        hi[ax] = slice(k, k + N)
-        lo = [slice(None)] * a.ndim
-        lo[ax] = slice(0, N)
-        return (cs[tuple(hi)] - cs[tuple(lo)]) / k
-
-    return _blur_axis(_blur_axis(img, img.ndim - 1), 0)
-
-
 def _glow_ramp(colour: np.ndarray) -> np.ndarray:
     """256 colours from background to white-hot, as (256, 3) floats 0-255.
 
     A glow that scales one colour by brightness is a straight line through
-    colour space, and it looks flat -- which is most of what still read as
-    cheap after the sphere was dense and sharp. Real emission shifts hue as
-    it gets hotter: deep and saturated where it is dim, the material's own
-    colour in the middle, desaturating to white at the core. Three stops
-    are enough to get that, and since this only ever fills a lookup table
-    it costs nothing per frame.
+    colour space, and it looks flat. Real emission shifts hue as it gets
+    hotter: deep and saturated where it is dim, the material's own colour
+    in the middle, desaturating to white at the core. Three stops are
+    enough to get that, and since this only ever fills a lookup table it
+    costs nothing per frame.
     """
     deep = colour * 0.55                       # dim: darker, still saturated
     mid  = colour                              # the logo's own green
@@ -221,121 +118,14 @@ def _glow_ramp(colour: np.ndarray) -> np.ndarray:
     return np.clip(_BG[None, :] * 255.0 + ramp * (_GLOW_RANGE * 255.0), 0.0, 255.0)
 
 
-def _wide_bloom(img: np.ndarray, S: int, factor: int = 4) -> np.ndarray:
-    """The broad atmospheric glow, computed at 1/factor resolution.
-
-    A bloom this wide carries no detail finer than the blur radius, so
-    downsampling first costs nothing visually and the blur then runs over
-    sixteen times fewer pixels. Measured at 680 px: 7.6 ms full resolution
-    against 3.8 ms this way, and that saving is what pays for rendering the
-    rest of the frame at the widget's native size.
-    """
-    small = S // factor
-    trimmed = img[: small * factor, : small * factor]
-    low = trimmed.reshape(small, factor, small, factor).mean(axis=(1, 3))
-    low = _box_blur1(low, max(1, 20 // factor))
-    # One extra blur pass at the *low* resolution, before upsampling, so
-    # neighbouring low-res samples bleed into each other -- np.repeat then
-    # tiles a smoother gradient instead of a hard step, and this avoids
-    # blurring the full-size array a second time.
-    low = _box_blur1(low, 1)
-    up = np.repeat(np.repeat(low, factor, axis=0), factor, axis=1)
-    if up.shape[0] == S:
-        return up
-    # Integer division left a few pixels uncovered; pad with the edge row
-    # and column rather than returning a smaller array.
-    pad = S - up.shape[0]
-    return np.pad(up, ((0, pad), (0, pad)), mode="edge")
-
-
-def _gauss_blur(img: np.ndarray, r: int) -> np.ndarray:
-    """2 × box blur ≈ triangle filter — round halos without the third pass,
-    which cost more than it added visually."""
-    return _box_blur1(_box_blur1(img, r), r)
-
-
-def _true_gauss_blur(img: np.ndarray, sigma: float) -> np.ndarray:
-    """True separable Gaussian — produces perfectly round halos."""
-    r = max(1, int(3.0 * sigma))
-    x = np.arange(-r, r + 1, dtype=np.float32)
-    k = np.exp(-x ** 2 / (2.0 * sigma ** 2))
-    k /= k.sum()
-
-    def _conv(arr: np.ndarray, axis: int) -> np.ndarray:
-        pad = [(0, 0)] * 3
-        pad[axis] = (r, r)
-        p = np.pad(arr, pad, mode='edge')
-        # Stack shifted views and dot with kernel — no Python loop
-        views = np.stack(
-            [p.take(range(i, i + arr.shape[axis]), axis=axis) for i in range(len(k))],
-            axis=0,
-        )
-        return np.tensordot(k, views, axes=([0], [0]))
-
-    return _conv(_conv(img, 1), 0)
-
-
-class _ParticleData:
-    """Pre-computed, immutable particle geometry (regenerated on resize)."""
-
-    def __init__(self, n_sphere: int, n_stars: int, seed: int = 42) -> None:
-        rng = random.Random(seed)
-
-        # ── Sphere particles ──────────────────────────────────────────────
-        dirs  = _rand_unit_sphere(n_sphere, rng)
-        # A thin shell reads as a sphere; a thick one projects to a filled
-        # disc with no silhouette. Most particles sit near r=1 so the limb
-        # crowds and draws the outline, with a light interior haze behind it.
-        radii = np.array(
-            [rng.gauss(0.97, 0.03) if rng.random() < 0.88
-             else rng.uniform(0.35, 0.92)
-             for _ in range(n_sphere)],
-            dtype=np.float32,
-        ).clip(0.30, 1.03)
-        # A few bright nodes over a dim field, rather than one uniform
-        # brightness: that contrast is most of what makes it read as depth.
-        # The bright fraction is small because at 60 000 particles even 1 %
-        # is 600 highlights, which is already plenty of sparkle.
-        sizes = np.array(
-            [rng.uniform(6.0, 11.0) if rng.random() < 0.012
-             else rng.uniform(0.35, 1.5)
-             for _ in range(n_sphere)],
-            dtype=np.float32,
-        )
-        phases = np.array(
-            [rng.uniform(0.0, 2.0 * math.pi) for _ in range(n_sphere)],
-            dtype=np.float32,
-        )
-        self.sphere_dirs   = dirs            # (N, 3) unit vectors
-        self.sphere_radii  = radii           # (N,)
-        self.sphere_sizes  = sizes           # (N,)
-        self.sphere_phases = phases          # (N,)
-
-        # ── Background stars ──────────────────────────────────────────────
-        # Directions kept (not just the projection) so they can turn along
-        # with the sphere -- a star field pre-projected once and never
-        # rotated sat frozen behind a shell that kept turning around it,
-        # which read as "the middle stays still" while everything else moved.
-        self.star_dirs = _rand_unit_sphere(n_stars, rng)
-        self.star_radii = np.array(
-            [rng.uniform(8.0, 22.0) for _ in range(n_stars)], dtype=np.float32
-        )
-        self.star_phases = np.array(
-            [rng.uniform(0.0, 2.0 * math.pi) for _ in range(n_stars)],
-            dtype=np.float32,
-        )
-
-
 class NeuroVisual(QWidget):
-    """NEO's central animation: a dense, glowing particle-cloud sphere that
-    rotates, breathes, and colour-shifts with AgentState — JARVIS-style
-    volumetric look achieved entirely via numpy (fast separable box-blur glow
-    + additive scatter) and QPainter image blit.  No OpenGL required."""
+    """NEO's central indicator: a plain, static coloured light -- a
+    deliberate, much simpler step back from the rotating particle sphere
+    (and then the breathing/voice-reactive glow) this replaces while that
+    design is reworked. It only redraws when AgentState actually changes,
+    not on a timer, so an idle conversation costs no CPU/GPU at all."""
 
     _COMPACT_SIZE = 280
-    # Blur cost is O(side^2); dropping from 680 to 600 cuts it by about a
-    # fifth on top of the particle-count reduction above, in direct response
-    # to reports of the animation stuttering and driving sustained GPU load.
     _FOCUS_SIZE   = 700
 
     _frame_ready = Signal(QPixmap)  # emitted from render thread → main thread
@@ -345,32 +135,17 @@ class NeuroVisual(QWidget):
         self._focus = False
         self.setFixedSize(self._COMPACT_SIZE, self._COMPACT_SIZE)
 
-        self._state         = AgentState.IDLE
-        self._hue           = _STATE_HUE[AgentState.IDLE]
-        self._sat           = _STATE_SAT[AgentState.IDLE]
-        self._yaw           = 0.0
-        self._breathe_phase = 0.0
-        self._breathe       = 0.5
-        self._time          = 0.0
-        self._audio_level        = 0.0
-        self._audio_level_smooth = 0.0
-
-        self._pdata = _ParticleData(_N_SPHERE, _N_STARS)
+        self._state = AgentState.IDLE
 
         # Widget must be visually transparent so no Qt background colour
         # paints on top of (or slightly differs from) our rendered _BG.
         self.setStyleSheet("background: transparent; border: none;")
 
         self._cached_pixmap: QPixmap | None = None
-        self._render_lock = threading.Lock()   # one render thread at a time
-        self._rendering   = False
-
+        self._rendering = False
         self._frame_ready.connect(self._on_frame_ready)
 
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self._timer.setInterval(_STATE_TICK_MS[AgentState.IDLE])
-        self._timer.start()
+        self._render_async()
 
     # ── Public API ────────────────────────────────────────────────────────
     def set_focus(self, focus: bool) -> None:
@@ -379,60 +154,34 @@ class NeuroVisual(QWidget):
         self._focus = focus
         size = self._FOCUS_SIZE if focus else self._COMPACT_SIZE
         self.setFixedSize(size, size)
+        self._render_async()
 
     def set_state(self, state: AgentState) -> None:
+        if state == self._state:
+            return
         self._state = state
-        self._timer.setInterval(_STATE_TICK_MS[state])
-        if state != AgentState.SPEAKING:
-            self._audio_level = 0.0
+        self._render_async()
 
     def set_audio_level(self, level: float) -> None:
-        """Drive the sphere's voice-reactivity (0.0 = silence, 1.0 = loud).
-        Call repeatedly while SPEAKING; resets automatically on state change."""
-        self._audio_level = max(0.0, min(1.0, float(level)))
+        """Kept so callers (push-to-talk, wake-word) don't need to know
+        this is a static light now -- it simply has nothing to react with
+        at the moment. See the class docstring."""
 
     def _on_frame_ready(self, pixmap: QPixmap) -> None:
         self._cached_pixmap = pixmap
         self._rendering = False
         self.update()
 
-    # ── Animation ─────────────────────────────────────────────────────────
-    def _tick(self) -> None:
-        dt = self._timer.interval()
-        self._yaw           += dt * _STATE_SPIN[self._state]
-        self._breathe_phase += dt * _STATE_BREATHE[self._state]
-        self._breathe        = 0.5 + 0.5 * math.sin(self._breathe_phase)
-        self._time          += dt / 1000.0
-
-        target_hue = _STATE_HUE[self._state]
-        target_sat = _STATE_SAT[self._state]
-        self._hue  += (target_hue - self._hue) * 0.06
-        self._sat  += (target_sat - self._sat) * 0.06
-
-        target = self._audio_level
-        alpha  = 0.40 if target > self._audio_level_smooth else 0.12
-        self._audio_level_smooth += (target - self._audio_level_smooth) * alpha
-
-        # Kick off a render only if the previous one finished
-        if not self._rendering:
-            self._rendering = True
-            # Snapshot mutable state for the thread
-            snap = (
-                self._state, self._hue, self._sat, self._yaw,
-                self._breathe, self._time, self._audio_level_smooth,
-                self._render_size(),
-            )
-            t = threading.Thread(target=self._render_thread, args=(snap,), daemon=True)
-            t.start()
-
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        if not self._timer.isActive():
-            self._timer.start()
-
-    def hideEvent(self, event) -> None:  # noqa: N802
-        self._timer.stop()
-        super().hideEvent(event)
+    def _render_async(self) -> None:
+        """Renders one frame in the background for the current state/size.
+        Not on any timer -- called only when something actually changed."""
+        if self._rendering:
+            return
+        self._rendering = True
+        snap = (self._state, _STATE_HUE[self._state], _STATE_SAT[self._state],
+                self._render_size())
+        t = threading.Thread(target=self._render_thread, args=(snap,), daemon=True)
+        t.start()
 
     def _render_thread(self, snap: tuple) -> None:
         try:
@@ -444,16 +193,6 @@ class NeuroVisual(QWidget):
             pass
 
     # ── Rendering ─────────────────────────────────────────────────────────
-    def _rotation_matrix(self, yaw: float) -> np.ndarray:
-        pitch = math.sin(yaw * 0.38) * 0.32
-        cy, sy = math.cos(yaw),   math.sin(yaw)
-        cp, sp = math.cos(pitch), math.sin(pitch)
-        return np.array([
-            [cy,  sy*sp,  sy*cp],
-            [0,   cp,    -sp   ],
-            [-sy, cy*sp,  cy*cp],
-        ], dtype=np.float32)
-
     def _render_size(self) -> int:
         """Pixel size of the frame to render: the widget's own size, so the
         result is blitted 1:1 instead of being stretched."""
@@ -462,96 +201,19 @@ class NeuroVisual(QWidget):
 
     def _render_frame(self, snap: tuple) -> QPixmap:
         """Pure function — runs on a background thread, no self mutation."""
-        state, hue, sat, yaw, breathe, time_, av, S = snap
-        pd = self._pdata
+        state, hue, sat, S = snap
 
-        voice_swell = av * 0.18 if state == AgentState.SPEAKING else 0.0
-        breath = 0.97 + 0.06 * breathe + voice_swell
-
-        R     = self._rotation_matrix(yaw)
-        # Rotate the unit directions, then scale: keeping the unit normal
-        # around is what makes the rim lighting below possible.
-        ndir  = pd.sphere_dirs @ R.T
-        pos   = ndir * (pd.sphere_radii * breath)[:, None]
-        psc   = _CAM_DIST / np.maximum(_CAM_DIST - pos[:, 2], 0.01)
-        depth = np.clip((pos[:, 2] + 1.0) * 0.5, 0.0, 1.0)
-
-        cx = cy = S * 0.5
-        fx = pos[:, 0] * psc * _CLIP_SCALE * cx + cx
-        fy = (-pos[:, 1]) * psc * _CLIP_SCALE * cy + cy
-
-        tw = 0.5 + 0.5 * np.sin(time_ * 2.4 + pd.sphere_phases)
-
-        # Rim (Fresnel) lighting: a particle is brightest where the shell
-        # turns away from the camera, i.e. at the silhouette. That bright
-        # outline is what reads as "hollow sphere" -- shading by depth alone
-        # lit the middle and left the thing looking like a flat disc of
-        # confetti no matter how the particles were distributed.
-        rim   = (1.0 - np.abs(ndir[:, 2])) ** 1.5
-        front = 0.32 + 0.68 * depth       # back hemisphere sits behind
-        # The floor is what the shell's face reads as. Too low and the
-        # middle is an empty hole with specks in it rather than a surface
-        # turned away from you.
-        shade = (0.13 + 0.87 * rim) * front
-
-        # Shading rides in the intensity, so colour stays uniform and is
-        # applied once after the blur.
-        alpha = shade * (0.60 + 0.40 * tw) * (pd.sphere_sizes / 3.0)
-        alpha *= (1.0 + 0.9 * av)
-
-        # One single-channel intensity map for sphere + stars: blurring one
-        # channel instead of three is the difference between ~90 ms and
-        # ~30 ms a frame at 600 px.
-        flat = np.zeros(S * S, dtype=np.float32)
-        _splat(flat, S, fx, fy, alpha)
-
-        # Stars turn with the sphere, at a fraction of its rate -- distant
-        # enough to look like it barely moves, not so static it reads as a
-        # hole punched in the middle of an otherwise-rotating shell.
-        star_R = self._rotation_matrix(yaw * 0.18)
-        sp = (pd.star_dirs @ star_R.T) * pd.star_radii[:, None]
-        s_psc = _CAM_DIST / (_CAM_DIST - sp[:, 2])
-        s_fx = sp[:, 0] * s_psc * 0.055 * cx + cx
-        s_fy = sp[:, 1] * s_psc * 0.055 * cy + cy
-
-        # 0..1, twinkling but never negative -- a signed weight here was
-        # *subtracting* light from the buffer on every dim half of its
-        # cycle, and that dip survived into the low-resolution bloom pass as
-        # a visibly darker square block once it was upsampled back.
-        stw = 0.5 + 0.5 * np.sin(time_ * 1.5 + pd.star_phases)
-        _splat(flat, S, s_fx, s_fy, stw * 0.40)
-
-        buf = flat.reshape(S, S)
-
-        # Two passes, not one: a single box blur is a square kernel, so
-        # every particle came out as a little hard-edged square. Two passes
-        # convolve to a triangle kernel, which is round enough that the
-        # dots stop having corners -- the bilinear splat softens where the
-        # dot sits, but only the kernel decides what shape it is.
-        g1 = _gauss_blur(buf, 1)
-        # The atmosphere is low-frequency by definition, so computing it at
-        # a quarter of the resolution and scaling back up is visually
-        # identical and half the cost.
-        g2 = _wide_bloom(buf, S)
-
-        # Gains kept low enough that the rim lands mid-ramp, on the logo's
-        # own green. Driving it to the top of the ramp blew the silhouette
-        # out to flat white and lost the colour entirely.
-        glow = g1 * (8.0 + 5.5 * av) + g2 * (3.4 + 3.4 * av)
+        glow = _glow_shape(S)
         colour = _hsv_to_rgb(hue % 1.0, sat, np.array([1.0], np.float32))[0]
 
         # Colourize through a 256-entry lookup table rather than a full
-        # (S, S, 3) float broadcast. The glow is one channel, so the whole
-        # colour mapping fits in a table and the frame becomes a single
-        # gather -- 18 ms of broadcast, clip and float-to-byte conversion
-        # down to about 5 ms, which is what pays for the extra particles.
+        # (S, S, 3) float broadcast -- the glow is one channel, so the
+        # whole colour mapping fits in a table and the frame becomes a
+        # single gather.
         lut = np.empty((256, 4), dtype=np.uint8)
         lut[:, :3] = _glow_ramp(colour)
         lut[:, 3] = 255
 
-        # Quantized over 0.._GLOW_RANGE rather than 0..1 so the brightest
-        # cores still clip per channel and go white-hot, the way they did
-        # when this was computed in floating point.
         index = np.clip(glow * (255.0 / _GLOW_RANGE), 0.0, 255.0).astype(np.uint8)
         rgba = np.ascontiguousarray(lut[index])
         img = QImage(rgba.data, S, S, S * 4, QImage.Format.Format_RGBA8888)
@@ -565,14 +227,14 @@ class NeuroVisual(QWidget):
 
         painter = QPainter(self)
         if pixmap.width() == W and pixmap.height() == H:
-            # The common case now that frames are rendered at the widget's
-            # own size: blit it. Calling scaled() here would still allocate
-            # and copy the whole frame on every repaint to produce an
-            # identical image.
+            # The common case: frames are rendered at the widget's own
+            # size, so this is a direct blit. Calling scaled() here would
+            # still allocate and copy the whole frame on every repaint to
+            # produce an identical image.
             painter.drawPixmap(0, 0, pixmap)
         else:
-            # Only while a resize is in flight and the cached frame is still
-            # the old size.
+            # Only while a resize is in flight and the cached frame is
+            # still the old size.
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             scaled = pixmap.scaled(
                 W, H,
